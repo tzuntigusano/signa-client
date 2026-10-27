@@ -16,9 +16,9 @@ jobs:
         os: [macos-14, macos-15-intel]   # arm64 · x86_64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -37,7 +37,7 @@ jobs:
           # sin cuenta, el supervisor del Gateway explica cómo se usa y sale con 1
           set +e; "$APP" --module signa.gateway; test $? -eq 1
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: signa-mac-${{ runner.arch }}
           path: |
