@@ -319,6 +319,8 @@ class MainWindow(QMainWindow):
             else:
                 if d["type"] == "admin_invite":
                     adm.show_invite(d["name"], d["code"])
+                elif d["type"] == "admin_access" and d.get("code"):
+                    adm.show_invite(d["name"], d["code"], d.get("handle"))
                 adm.note("Saved")
                 self.client.request("admin_state")
         elif d.get("type") == "stats":
@@ -352,9 +354,11 @@ class MainWindow(QMainWindow):
             self._forget_everything()
 
     def _on_alert(self, d: dict):
-        """Aviso de Signa (cuadre con IBKR, error de un motor): a Overview y como notificación de Windows."""
+        """Aviso de Signa (cuadre con IBKR, error de un motor, solicitud de acceso): a Overview y como notificación."""
         if self.screens:
             self.screens["overview"].add_alert(d)
+            if d.get("kind") == "access" and "admin" in self.screens:  # el panel de admin, con la solicitud nueva
+                self.client.request("admin_state")
         if self.tray is not None:
             self.tray.showMessage("Signa", d.get("text", ""), QSystemTrayIcon.Warning, 10000)
 

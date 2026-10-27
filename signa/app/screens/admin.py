@@ -1,8 +1,9 @@
-"""Admin (solo cuentas admin): usuarios e invitaciones, qué proveedores tiene cada uno, proveedores solo paper, el
+"""Admin (solo cuentas admin): solicitudes de acceso con Discord, usuarios e
+invitaciones, qué proveedores tiene cada uno, proveedores solo paper, el
 motor de cada proveedor (SL / TP1 / TP2 / persecución, para todos sus usuarios) y los filtros de mensajes. Todo lo
 aplica y valida el servidor (admin_panel.py); esto solo lo enseña y lo manda."""
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QCheckBox, QComboBox, QLineEdit, QMessageBox, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit, QMessageBox, QWidget
 
 from ..widgets import Card, Toggle, button, columns, hbox, label, section, tag, vbox, widget
 from .base import Page
@@ -57,9 +58,41 @@ class AdminScreen(Page):
             lay.addWidget(label("Loading…", "mu"))
             return
         provs = self.state["providers"]
+        if "requests" in self.state:  # servidor con la migración 005
+            pending = sum(r["status"] == "pending" for r in self.state["requests"])
+            lay.addWidget(section(f"Access requests ({pending} pending)" if pending else "Access requests",
+                                  self._requests(self.state["requests"])))
         lay.addWidget(section("Users", self._users(self.state["users"], provs)))
         lay.addWidget(widget(columns(section("Providers", self._providers(provs)),
                                      section("Message filters", self._filters(self.state["filters"], provs)))))
+
+    def _requests(self, requests: list[dict]) -> QWidget:
+        card = Card()
+        if not requests:
+            card.add(label("No requests. People ask from Signa's welcome screen with \"Request access with "
+                           "Discord\".", "small", wrap=True))
+        for r in requests:
+            who = f"@{r['handle']}" + (f"  ·  {r['display_name']}" if r.get("display_name") else "")
+            when = (r.get("requested_at") or "")[:16].replace("T", " ")
+            sub = f"Discord ID {r['discord_id']}  ·  asked {when}"
+            if r["status"] == "pending":
+                make = button("Create key", "primary")
+                make.clicked.connect(lambda _=False, did=r["discord_id"]:
+                                     self._send("admin_access", discord_id=did, approve=True))
+                reject = button("Reject", "quiet")
+                reject.clicked.connect(lambda _=False, r=r: self._reject(r))
+                card.add_row(who, sub, widget(hbox(tag("Pending", "warn"), make, reject, spacing=8)))
+            else:
+                done = (r.get("decided_at") or "")[:16].replace("T", " ")
+                card.add_row(who, f"{sub}  ·  {r['status']} {done}",
+                             tag("Key created" if r["status"] == "approved" else "Rejected",
+                                 "good" if r["status"] == "approved" else "neutral"))
+        return card
+
+    def _reject(self, r: dict):
+        if QMessageBox.question(self, "Reject request", f"Reject the request from @{r['handle']}?") == \
+                QMessageBox.Yes:
+            self._send("admin_access", discord_id=r["discord_id"], approve=False)
 
     def _users(self, users: list[dict], provs: list[dict]) -> QWidget:
         card = Card()
@@ -73,7 +106,8 @@ class AdminScreen(Page):
                 boxes.append(cb)
             role = tag("Admin", "accent") if u.get("role") == "admin" else tag(u.get("status") or "active", "neutral")
             seen = (u.get("last_seen") or "never")[:16].replace("T", " ")
-            card.add_row(u["name"], f"Last seen {seen}", widget(hbox(role, *boxes, spacing=12)))
+            sub = f"@{u['discord_handle']}  ·  last seen {seen}" if u.get("discord_handle") else f"Last seen {seen}"
+            card.add_row(u["name"], sub, widget(hbox(role, *boxes, spacing=12)))
         name = QLineEdit()
         name.setPlaceholderText("Name of the new user")
         invite = button("Create invite", "primary")
@@ -154,10 +188,16 @@ class AdminScreen(Page):
         card.add(widget(hbox(add, None, save)))
         return card
 
-    def show_invite(self, name: str, code: str):
+    def show_invite(self, name: str, code: str, handle: str | None = None):
+        """La clave sale UNA vez: «Copy message» deja en el portapapeles el mensaje listo para mandar por Discord."""
         box = QMessageBox(self)
         box.setWindowTitle("Invite created")
-        box.setText(f"Invite key for {name} (shown only once):")
+        box.setText(f"Invite key for {name}" + (f" (@{handle} on Discord)" if handle else "") + " — shown only once:")
         box.setInformativeText(code)
         box.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        copy = box.addButton("Copy message", QMessageBox.ActionRole)
+        box.addButton(QMessageBox.Close)
+        message = (f"Here's your Signa invite key: {code}\nOpen Signa, enter it on the welcome screen and accept "
+                   "the terms. It works once.")
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(message))
         box.exec()
