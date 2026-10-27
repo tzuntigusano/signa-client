@@ -1,0 +1,21 @@
+[project]
+name = "signa"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["server/copier", "signa/executor/copier"]  # copias exactas del copiador: no se tocan
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"signa/app/theme.py" = ["E501"]  # la hoja de estilos se lee mejor en una línea por regla
+"signa/app/widgets.py" = ["E501"]  # trazos de los iconos
+"server/signahub/providers/*.py" = ["E501"]  # expresiones regulares largas, mejor en una línea
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"

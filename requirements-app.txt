@@ -1,0 +1,18 @@
+# La APP de escritorio (Windows y Mac): lo que va dentro de Signa.exe / Signa.app. El servidor tiene las suyas
+# (server/requirements.txt).
+PySide6-Essentials==6.12.0
+psutil==7.2.2
+aiohttp==3.14.5
+ib_async==2.1.0
+aeventkit==2.1.0
+nest-asyncio==1.6.0
+keyring==25.7.0
+cryptography==50.0.2
+tzdata==2025.3
+# solo Windows: el agente lee las notificaciones de Windows (la fuente de Hacedor)
+winrt-runtime==3.2.1; sys_platform == "win32"
+winrt-Windows.ApplicationModel==3.2.1; sys_platform == "win32"
+winrt-Windows.Foundation==3.2.1; sys_platform == "win32"
+winrt-Windows.Foundation.Collections==3.2.1; sys_platform == "win32"
+winrt-Windows.UI.Notifications==3.2.1; sys_platform == "win32"
+winrt-Windows.UI.Notifications.Management==3.2.1; sys_platform == "win32"

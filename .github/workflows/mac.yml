@@ -1,0 +1,46 @@
+# Construye Signa para Mac en los Mac de GitHub (Apple Silicon e Intel): Signa.app en un .dmg para instalar y en un
+# .zip para las actualizaciones. La FIRMA de las actualizaciones no se hace aquí: tools/release.py, en el PC del
+# admin, descarga estos artefactos, los firma con su clave y los publica.
+name: Build Signa for Mac
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]   # arm64 · x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-app.txt pyinstaller==6.16.0
+
+      - name: Build Signa.app, .dmg and update .zip
+        run: python tools/build.py
+
+      - name: The packaged app has everything inside
+        run: |
+          APP=dist/Signa.app/Contents/MacOS/Signa
+          "$APP" --module signa.selfcheck
+          # sin cuenta, el supervisor del Gateway explica cómo se usa y sale con 1
+          set +e; "$APP" --module signa.gateway; test $? -eq 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signa-mac-${{ runner.arch }}
+          path: |
+            dist/*.dmg
+            dist/Signa-mac-*.zip
+          if-no-files-found: error
