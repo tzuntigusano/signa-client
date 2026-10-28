@@ -49,17 +49,27 @@ def app_running() -> bool:
         s.close()
 
 
+def _uses_dir(p) -> bool:
+    """¿El proceso corre desde la carpeta de Signa o la usa? (los IB Gateway de versiones hasta la 0.1.3 cargaban el
+    IBC.jar de dentro: con ellos abiertos Windows no deja cambiar la carpeta)."""
+    here = str(DIR.resolve()).lower()
+    exe = p.info.get("exe")
+    if exe and Path(exe).resolve().is_relative_to(DIR.resolve()):
+        return True
+    return any(here in str(a).lower() for a in (p.info.get("cmdline") or []))
+
+
 def stop_signa(wait: float = 30):
     """Cierra lo que corre desde la carpeta de Signa (la app ya se cerró sola; quedan agente, ejecutor y
-    supervisores: el IB Gateway, que es Java, sigue funcionando)."""
+    supervisores). Un IB Gateway solo si usa algo de la carpeta (los antiguos); Signa los vuelve a abrir."""
     import psutil
     end = time.time() + wait
     while app_running() and time.time() < end:
         time.sleep(0.5)
     mine = []
-    for p in psutil.process_iter(["exe"]):
+    for p in psutil.process_iter(["exe", "cmdline"]):
         try:
-            if p.info["exe"] and Path(p.info["exe"]).resolve().is_relative_to(DIR.resolve()) and p.pid != os.getpid():
+            if p.pid != os.getpid() and _uses_dir(p):
                 mine.append(p)
         except (psutil.Error, OSError, ValueError):
             continue
@@ -79,10 +89,38 @@ def copy_app():
     old = DIR.with_name(APP + ".old")
     shutil.rmtree(old, ignore_errors=True)
     if DIR.exists():
-        DIR.rename(old)
+        _rename(DIR, old)
     tmp.rename(DIR)
     shutil.rmtree(old, ignore_errors=True)
     shutil.copy2(sys.executable, DIR / "Uninstall.exe")
+
+
+def _rename(src: Path, dst: Path, tries: int = 20):
+    """Un antivirus o el Explorador pueden tener un fichero abierto un momento: se reintenta unos segundos. Si sigue,
+    se dice QUÉ programa lo tiene (si no, «acceso denegado» no le dice nada a nadie)."""
+    for _ in range(tries):
+        try:
+            src.rename(dst)
+            return
+        except PermissionError:
+            time.sleep(0.5)
+    users = sorted(_lockers())
+    raise PermissionError("Signa's folder is in use" + (f" by: {', '.join(users)}" if users else "") +
+                          ". Close it and run the installer again.")
+
+
+def _lockers() -> set[str]:
+    import psutil
+    here = str(DIR.resolve()).lower()
+    names = set()
+    for p in psutil.process_iter(["name"]):
+        try:
+            if any(here in f.path.lower() for f in p.open_files()) or \
+                    (p.cwd() or "").lower().startswith(here):
+                names.add(p.info["name"])
+        except (psutil.Error, OSError):
+            continue
+    return names
 
 
 def shortcut():

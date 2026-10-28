@@ -66,8 +66,11 @@ def download_and_check() -> Path:
 def mac_script(zip_path: Path, app: Path, pid: int) -> str:
     """El cambio de la .app en Mac, cuando la app ya se ha cerrado (no se puede sustituir mientras corre)."""
     new = zip_path.with_suffix("")
+    # cerrada la app, fuera también el ejecutor y los supervisores (la misma .app con «--module»): si siguieran, la
+    # versión nueva no podría arrancar los suyos. Los IB Gateway (Java) siguen funcionando.
     return f"""#!/bin/sh
 while kill -0 {pid} 2>/dev/null; do sleep 0.5; done
+pkill -f "{app}/Contents/MacOS/Signa"; sleep 2; pkill -9 -f "{app}/Contents/MacOS/Signa"
 rm -rf "{new}" && mkdir -p "{new}" && /usr/bin/ditto -x -k "{zip_path}" "{new}" || exit 1
 rm -rf "{app}.old" && mv "{app}" "{app}.old" && mv "{new}/Signa.app" "{app}" && rm -rf "{app}.old" "{new}"
 open "{app}"

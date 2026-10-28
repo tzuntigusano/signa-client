@@ -91,7 +91,21 @@ def java(gw: Path) -> Path:
 
 def classpath(gw: Path) -> str:
     jars = sorted(str(j) for j in (gw / "jars").glob("*.jar"))
-    return os.pathsep.join([*jars, str(gw / ".install4j" / "i4jruntime.jar"), str(IBC_JAR)])
+    return os.pathsep.join([*jars, str(gw / ".install4j" / "i4jruntime.jar"), str(ibc_jar())])
+
+
+def ibc_jar() -> Path:
+    """IBC.jar COPIADO a la carpeta de datos (un nombre por contenido). Java lo tiene abierto mientras el Gateway
+    funciona: si lo cargara de la carpeta de la app, Windows no dejaría actualizar Signa con el Gateway en marcha."""
+    import hashlib
+    data = IBC_JAR.read_bytes()
+    dst = STATE / f"IBC-{hashlib.sha256(data).hexdigest()[:12]}.jar"
+    if not dst.exists():
+        STATE.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_suffix(".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(dst)
+    return dst
 
 
 def vm_options(gw: Path) -> list[str]:
