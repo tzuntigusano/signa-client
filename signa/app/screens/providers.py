@@ -12,7 +12,8 @@ from .base import Page
 TOGGLES = [
     ("auto_buy", "Auto buy", "Buys as soon as the call arrives. Off: you get a card to buy."),
     ("auto_protect", "Auto exit on protection", "The provider's warnings sell or raise the stop. Off: alert card."),
-    ("auto_rules", "Auto exit on rules", "Stop ladder and trailing act alone. Off: they only alert you."),
+    ("auto_rules", "Auto exit on rules", "Take profit, stop ladder and trailing act alone. Off: only your "
+     "initial stop is placed and they alert you."),
     ("all_msgs", "Show all messages", "Forward the provider's chat too, not only calls and fills."),
 ]
 SIZE_LABEL = {"contracts": ("Contracts", "contracts", ""), "amount": ("Amount per trade", "amount", "$"),

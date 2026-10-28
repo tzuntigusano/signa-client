@@ -193,8 +193,9 @@ class SettingsScreen(Page):
         check = button("Check now")
         check.clicked.connect(self._check)
         self.updates.add_row("Version", None, widget(hbox(label(__version__, "mono"), state, check)))
+        self.install_btn = None
         if self.latest and version_tuple(self.latest) > version_tuple(__version__):
-            go = button(f"Install v{self.latest}", "primary")
+            go = self.install_btn = button(f"Install v{self.latest}", "primary")
             go.clicked.connect(lambda: self._update(go))
             self.updates.add_row("Update", "Signed by Signa and checked before installing. Signa closes for a "
                                  "moment and opens again on the new version.", go)
@@ -212,6 +213,16 @@ class SettingsScreen(Page):
         box.exec()
         if box.clickedButton() is not yes:
             return
+        self._install(btn)
+
+    def install_now(self):
+        """Desde el aviso de versión nueva (ya ha dicho que sí): lo mismo que el botón Install, sin volver a
+        preguntar. El progreso se ve en ese botón."""
+        self._paint_updates()
+        if self.install_btn is not None and self.install_btn.isEnabled():
+            self._install(self.install_btn)
+
+    def _install(self, btn):
         btn.setEnabled(False)
         btn.setText("Downloading…")
 

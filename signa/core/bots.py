@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 
 from . import tls
-from .logs import HOME
+from .logs import HOME, Log
 
 CONFIG = HOME / "executor.json"
 TOKEN_RE = re.compile(r"^\d{5,15}:[A-Za-z0-9_-]{30,}$")
@@ -87,6 +87,8 @@ def api(token: str, method: str, wait: float = 15, **params):
         except ValueError:
             body = {"error_code": e.code, "description": str(e)}
     except (urllib.error.URLError, TimeoutError, OSError) as e:
+        # al usuario un mensaje sencillo; la causa de verdad (certificados, DNS, cortafuegos…) va al app.log
+        Log("app")("telegram", f"{method}: {type(e).__name__}: {getattr(e, 'reason', e)}")
         raise BotError("Can't reach Telegram. Check your internet connection.") from e
     if body.get("ok"):
         return body["result"]

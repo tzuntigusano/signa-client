@@ -1,8 +1,9 @@
 """Ventana principal: barra lateral + pantallas. Sin clave guardada enseña Welcome (alta con invitación).
 El panel de Admin solo existe en Windows: la versión de Mac ni lo trae (tools/build.py, tools/export_client.py)."""
 import json
+import time
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow,
                                QMenu, QMessageBox, QPushButton, QStackedWidget, QSystemTrayIcon, QVBoxLayout, QWidget)
 
@@ -28,6 +29,7 @@ NAV = [("overview", "Overview"), ("providers", "Providers"), ("trades", "Trades"
        ("calls", "Calls"), None,
        ("ibkr", "IBKR"), ("telegram", "Telegram"), ("settings", "Settings")]
 HAS_ADMIN = not runtime.IS_MAC
+UPDATE_SNOOZE = 6  # h: tras «Later», el aviso de versión nueva vuelve a salir pasado este tiempo
 if HAS_ADMIN:
     from .screens.admin import AdminScreen
     NAV.append(("admin", "Admin"))
@@ -50,6 +52,8 @@ class MainWindow(QMainWindow):
         self.current = "overview"
         self.state = {"user": "", "providers": [], "signals": [], "status": "connecting", "consents": None,
                       "app_latest": None, "role": None}
+        self.update_offered: dict[str, float] = {}  # versión -> hasta cuándo no se vuelve a avisar («Later»)
+        self.update_box = None  # el aviso de versión nueva, si está abierto
         if demo is not None:
             self.state["trades"] = demo
         self.quitting = False
@@ -106,6 +110,7 @@ class MainWindow(QMainWindow):
             self.nav_buttons["admin"].setVisible(self.state.get("role") == "admin")
         if self.screens:
             self.screens["settings"].set_account(d.get("consents"), d.get("app_latest"), d.get("role"))
+            QTimer.singleShot(0, self._offer_update)  # fuera de la señal: el aviso es una ventana modal
         if self.screens and self.screens["providers"].has_unsaved():
             self.screens["calls"].set_signals(self.state["signals"])
             self.screens["overview"].set_data(signals=self.state["signals"])
@@ -126,6 +131,7 @@ class MainWindow(QMainWindow):
         if self.screens:
             self.screens["calls"].add_signal(s)
             self.screens["overview"].set_data(signals=self.state["signals"])
+            self.screens["trades"].provider_message(s.get("provider") or "")  # su cronología, al momento
 
     def _fill(self):
         if not self.screens:
@@ -278,6 +284,33 @@ class MainWindow(QMainWindow):
         self.server_lb.setText(f'<span style="color:{theme.current[tone]}">●</span>&nbsp;&nbsp;{text}')
 
     # --- acciones ------------------------------------------------------------------------------
+    def _offer_update(self):
+        """AVISO de versión nueva (al conectar, en cada sync y al publicarse una: el servidor manda «resync»). Una
+        vez por versión; «Later» lo vuelve a enseñar a las UPDATE_SNOOZE horas (la app suele estar días abierta)."""
+        from .screens.settings import version_tuple
+        latest = self.state.get("app_latest")
+        if (not latest or not runtime.FROZEN or self.demo is not None
+                or version_tuple(latest) <= version_tuple(__version__)
+                or time.time() < self.update_offered.get(latest, 0) or self.update_box is not None):
+            return
+        from ..core.market import market_open
+        self.update_offered[latest] = time.time() + UPDATE_SNOOZE * 3600
+        box = self.update_box = QMessageBox(self)
+        box.setWindowTitle("Signa update")
+        box.setIcon(QMessageBox.Information)
+        box.setText(f"Signa v{latest} is available")
+        box.setInformativeText(f"You have v{__version__}. Installing takes about a minute: Signa closes and opens "
+                               "again on the new version. Your stops stay in IBKR."
+                               + ("\n\nThe US market is OPEN right now: you can install it later from Settings."
+                                  if market_open() else ""))
+        go = box.addButton("Install now", QMessageBox.AcceptRole)
+        box.addButton("Later", QMessageBox.RejectRole)
+        box.exec()
+        self.update_box = None
+        if box.clickedButton() is go:
+            self._go("settings")
+            self.screens["settings"].install_now()
+
     def _go(self, key: str):
         self.current = key
         c = theme.current

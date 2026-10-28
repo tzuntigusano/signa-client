@@ -2,7 +2,7 @@
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QHeaderView, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QHeaderView, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from .. import theme
 from ..widgets import Card, Segmented, button, chip_cell, hbox, kpi, label, provider_chip, table, tag, vbox
@@ -76,7 +76,9 @@ def reason_label(reason: str | None, provider: str) -> str:
     return reason[:1].upper() + reason[1:]
 
 
-MAX_EVENTS = 60
+TIMELINE_H = 380      # px: más alta, la cronología hace scroll (se abre abajo del todo: lo último)
+LIVE_EVERY = 10_000   # ms: las desplegadas que siguen vivas se vuelven a pedir solas
+LIVE_AFTER = 15 * 60  # s: y las cerradas hace poco (el servidor añade su charla hasta 5 min después)
 # origen de cada evento del detalle: (texto, tono). Los del proveedor llevan su chip y el tipo de enlace
 ENGINE_KINDS = {"plan": ("Signa", "accent"), "skip": ("Skipped", "warn"), "order": ("Order", "accent"),
                 "result": ("IBKR", "neutral"), "fill": ("Filled", "good"), "stop": ("SL", "warn"),
@@ -105,6 +107,11 @@ class TradesScreen(Page):
         self.expanded: set[str] = set()
         self._last = None  # lo último pintado: si llega igual, no se rehace
         self.details: dict[str, list | str | None] = {}  # None = cargando; str = error
+        self.scrolled: dict[str, int] = {}  # cronologías que has subido a mano (su posición); si no, abajo del todo
+        self.live = QTimer(self)
+        self.live.setInterval(LIVE_EVERY)
+        self.live.timeout.connect(self._live_tick)
+        self.live.start()
         self.period = "today"
         self.seg = Segmented([("today", "Today"), ("week", "Last 7 days"), ("all", "All")], "today")
         self.seg.changed.connect(self._set_period)
@@ -127,8 +134,7 @@ class TradesScreen(Page):
             self.trades = trades
             for t in trades:  # una desplegada que sigue viva puede tener novedades: se vuelve a pedir
                 if t["order_ref"] in self.expanded and t["status"] == "open":
-                    self.details.pop(t["order_ref"], None)
-                    self.detail_requested.emit(t["order_ref"])
+                    self.detail_requested.emit(t["order_ref"])  # sin vaciarla: nada de «Loading…» entretanto
         if providers is not None:
             self.names = {p["id"]: p["name"] for p in providers}
         self.refresh()
@@ -255,10 +261,31 @@ class TradesScreen(Page):
         lay.addWidget(tbl)
 
     # --- detalle de una operación ---------------------------------------------------------------------
+    def _live(self, t: dict) -> bool:
+        """¿Su cronología puede cambiar aún? Abierta, o cerrada hace menos de LIVE_AFTER."""
+        if t["status"] == "open":
+            return True
+        closed = when(t.get("closed_at"))
+        return closed is not None and (datetime.now().astimezone() - closed).total_seconds() < LIVE_AFTER
+
+    def _live_tick(self):
+        if not self.isVisible():
+            return
+        for t in self.trades:
+            if t["order_ref"] in self.expanded and self._live(t) and self.details.get(t["order_ref"]) is not None:
+                self.detail_requested.emit(t["order_ref"])
+
+    def provider_message(self, provider_id: str):
+        """Ha escrito el proveedor: sus operaciones desplegadas que siguen vivas, al momento."""
+        for t in self.trades:
+            if t["order_ref"] in self.expanded and t["provider_id"] == provider_id and self._live(t):
+                self.detail_requested.emit(t["order_ref"])
+
     def _toggle(self, t: dict):
         ref = t["order_ref"]
         if ref in self.expanded:
             self.expanded.discard(ref)
+            self.scrolled.pop(ref, None)  # al volver a abrirla, otra vez abajo del todo
         else:
             self.expanded.add(ref)
             if ref not in self.details:
@@ -267,7 +294,12 @@ class TradesScreen(Page):
         self.refresh()
 
     def set_detail(self, ref: str, events: list[dict] | None, error: str = ""):
-        self.details[ref] = events if events is not None else error or "Couldn't load the details."
+        new = events if events is not None else error or "Couldn't load the details."
+        if isinstance(new, str) and isinstance(self.details.get(ref), list):
+            return  # un fallo al refrescar no borra lo que ya se veía
+        if new == self.details.get(ref):
+            return  # nada nuevo: no se repinta (llega cada pocos segundos)
+        self.details[ref] = new
         if ref in self.expanded:
             self.refresh()
 
@@ -277,8 +309,13 @@ class TradesScreen(Page):
         box = QFrame()
         box.setStyleSheet(f"QFrame#Timeline {{ background: {c['sub']}; border-top: 1px solid {c['line']}; }}")
         box.setObjectName("Timeline")
-        lay = QVBoxLayout(box)
-        lay.setContentsMargins(52, 10, 20, 12)
+        outer = QVBoxLayout(box)
+        outer.setContentsMargins(52, 10, 20, 12)
+        inner = QWidget()
+        inner.setObjectName("TimelineBody")
+        inner.setStyleSheet("QWidget#TimelineBody { background: transparent; }")
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(0, 0, 8, 0)
         lay.setSpacing(4)
         ev = self.details.get(t["order_ref"])
         name = self.names.get(t["provider_id"], t["provider_id"])
@@ -290,7 +327,7 @@ class TradesScreen(Page):
             lay.addWidget(label("Nothing recorded for this trade.", "mu"))
         else:
             opened = when(t.get("opened_at"))
-            for e in ev[:MAX_EVENTS]:
+            for e in ev:
                 d = when(e.get("at"))
                 stamp = (d.strftime("%H:%M:%S") if d and opened and d.date() == opened.date()
                          else d.strftime("%b %d %H:%M").replace(" 0", " ") if d else "")
@@ -309,7 +346,33 @@ class TradesScreen(Page):
                 txt.setTextInteractionFlags(Qt.TextSelectableByMouse)
                 row.addWidget(txt, 1)
                 lay.addLayout(row)
-            if len(ev) > MAX_EVENTS:
-                lay.addWidget(label(f"…and {len(ev) - MAX_EVENTS} more", "mu"))
-        box.setFixedHeight(lay.sizeHint().height() + 4)
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QFrame.NoFrame)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        area.setStyleSheet("QScrollArea { background: transparent; }")
+        area.viewport().setAutoFillBackground(False)
+        area.setWidget(inner)
+        height = min(inner.sizeHint().height(), TIMELINE_H)
+        area.setFixedHeight(height)
+        outer.addWidget(area)
+        self._follow(area, t["order_ref"])
+        box.setFixedHeight(height + 22)
         return box
+
+    def _follow(self, area: QScrollArea, ref: str):
+        """Abajo del todo (lo último), y ahí se queda al llegar más; si la has subido, se respeta dónde estabas."""
+        bar = area.verticalScrollBar()
+
+        def place(_lo=0, hi=None):
+            hi = bar.maximum() if hi is None else hi
+            bar.setValue(hi if ref not in self.scrolled else min(self.scrolled[ref], hi))
+
+        def moved(v):
+            if bar.maximum() and v < bar.maximum() - 4:
+                self.scrolled[ref] = v
+            else:
+                self.scrolled.pop(ref, None)
+        bar.rangeChanged.connect(place)
+        place()
+        bar.valueChanged.connect(moved)
