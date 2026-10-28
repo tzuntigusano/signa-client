@@ -49,8 +49,8 @@ def build_app() -> Path:
         hidden += ["signa.agent.__main__", "keyring.backends.Windows"]
         collect += ["winrt"]  # el agente: notificaciones de Windows
     args = ["--name", "Signa", "--windowed", "--onedir", "--icon", str(ICON)]
-    if IS_MAC:
-        args += ["--osx-bundle-identifier", "com.signa.app"]
+    if IS_MAC:  # en Mac no hay panel de admin (signa/app/window.py, HAS_ADMIN)
+        args += ["--osx-bundle-identifier", "com.signa.app", "--exclude-module", "signa.app.screens.admin"]
     for src, dst in data:
         args += ["--add-data", f"{src}{os.pathsep}{dst}"]
     for h in hidden:

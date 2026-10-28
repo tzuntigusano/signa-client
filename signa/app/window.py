@@ -1,4 +1,5 @@
-"""Ventana principal: barra lateral + pantallas. Sin clave guardada enseña Welcome (alta con invitación)."""
+"""Ventana principal: barra lateral + pantallas. Sin clave guardada enseña Welcome (alta con invitación).
+El panel de Admin solo existe en Windows: la versión de Mac ni lo trae (tools/build.py, tools/export_client.py)."""
 import json
 
 from PySide6.QtCore import QSettings, Qt
@@ -6,10 +7,10 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QFileDialog, QFrame, 
                                QMenu, QMessageBox, QPushButton, QStackedWidget, QSystemTrayIcon, QVBoxLayout, QWidget)
 
 from .. import __version__
+from ..core import runtime
 from . import brand
 from . import client as net
 from . import theme
-from .screens.admin import AdminScreen
 from .screens.calls import CallsScreen
 from .screens.ibkr import IbkrScreen
 from .screens.overview import OverviewScreen
@@ -25,7 +26,11 @@ from .widgets import hbox, icon, label, logo
 # (clave, texto); None = hueco entre grupos
 NAV = [("overview", "Overview"), ("providers", "Providers"), ("trades", "Trades"), ("stats", "Stats"),
        ("calls", "Calls"), None,
-       ("ibkr", "IBKR"), ("telegram", "Telegram"), ("settings", "Settings"), ("admin", "Admin")]
+       ("ibkr", "IBKR"), ("telegram", "Telegram"), ("settings", "Settings")]
+HAS_ADMIN = not runtime.IS_MAC
+if HAS_ADMIN:
+    from .screens.admin import AdminScreen
+    NAV.append(("admin", "Admin"))
 STATUS = {"connecting": ("Connecting…", "warn"), "online": ("Server · online", "good"),
           "offline": ("Server · offline, retrying", "bad"), "rejected": ("Server · key not valid", "bad")}
 
@@ -188,13 +193,15 @@ class MainWindow(QMainWindow):
             "overview": OverviewScreen(), "providers": ProvidersScreen(), "trades": TradesScreen(),
             "stats": StatsScreen(),
             "calls": CallsScreen(), "ibkr": IbkrScreen(), "telegram": TelegramScreen(),
-            "settings": SettingsScreen(self.theme_mode), "admin": AdminScreen(),
+            "settings": SettingsScreen(self.theme_mode),
         }
+        if HAS_ADMIN:
+            self.screens["admin"] = AdminScreen()
+            self.screens["admin"].admin_request.connect(
+                lambda kind, data: self.client.request(kind, **data) if self.client else None)
         self.screens["settings"].theme_changed.connect(self._set_theme)
         self.screens["trades"].detail_requested.connect(self._trade_detail)
         self.screens["trades"].trade_requested.connect(self._open_trade)
-        self.screens["admin"].admin_request.connect(
-            lambda kind, data: self.client.request(kind, **data) if self.client else None)
         self.screens["stats"].stats_requested.connect(
             lambda period: self.client.request("stats", period=period) if self.client else None)
         if self.demo is not None:
@@ -260,7 +267,8 @@ class MainWindow(QMainWindow):
         fl.addWidget(self.user_lb)
         lay.addWidget(foot)
         self._paint_status()
-        self.nav_buttons["admin"].setVisible(self.state.get("role") == "admin")  # solo para cuentas admin
+        if "admin" in self.nav_buttons:
+            self.nav_buttons["admin"].setVisible(self.state.get("role") == "admin")  # solo para cuentas admin
         return side
 
     def _paint_status(self):
@@ -310,7 +318,7 @@ class MainWindow(QMainWindow):
             if path:
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(d["data"], f, indent=2, ensure_ascii=False, default=str)
-        elif str(d.get("type", "")).startswith("admin_"):
+        elif str(d.get("type", "")).startswith("admin_") and "admin" in self.screens:
             adm = self.screens["admin"]
             if not d.get("ok"):
                 adm.note(d.get("error") or "Failed", ok=False)
