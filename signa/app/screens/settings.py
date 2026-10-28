@@ -200,7 +200,7 @@ class SettingsScreen(Page):
                                  "moment and opens again on the new version.", go)
 
     def _update(self, btn):
-        from ..core.market import market_open
+        from ...core.market import market_open
         box = QMessageBox(self)
         box.setWindowTitle("Update Signa")
         box.setText(f"Install Signa v{self.latest} now?")
