@@ -58,7 +58,8 @@ def start_services() -> list[str]:
     ya en marcha. Devuelve lo arrancado y los avisos. BLOQUEA (escanea procesos): la app lo llama en un hilo."""
     done = []
     pieces = [("signa.executor", EXECUTOR_PORT, "executor")]
-    if runtime.IS_WIN:  # el agente lee las notificaciones de WINDOWS (la fuente de Hacedor): en Mac no aplica
+    # el agente lee las notificaciones de WINDOWS (la fuente de Hacedor): solo en el PC configurado como fuente
+    if runtime.IS_WIN and (HOME / "agent.json").exists():
         pieces.insert(0, ("signa.agent", AGENT_PORT, "agent"))
     for module, port, what in pieces:
         if not module_running(module, port):

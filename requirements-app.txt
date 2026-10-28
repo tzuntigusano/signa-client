@@ -9,6 +9,7 @@ nest-asyncio==1.6.0
 keyring==25.7.0
 cryptography==50.0.2
 tzdata==2025.3
+certifi==2026.10.23  # certificados raíz para la app de Mac (core.tls)
 # solo Windows: el agente lee las notificaciones de Windows (la fuente de Hacedor)
 winrt-runtime==3.2.1; sys_platform == "win32"
 winrt-Windows.ApplicationModel==3.2.1; sys_platform == "win32"

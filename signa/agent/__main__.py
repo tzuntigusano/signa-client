@@ -148,6 +148,9 @@ def main() -> int:
     if lock is None:
         log("another agent is already running on this PC: exiting")
         return 3
+    if not (HOME / "agent.json").exists():  # el agente solo sirve en el PC de la fuente (el de Ivan)
+        log("no agent.json: this PC is not a source, nothing to do")
+        return 0
     try:
         cfg = load_config()
         asyncio.run(check(cfg) if "--check" in sys.argv else Agent(cfg).run())

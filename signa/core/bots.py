@@ -12,6 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import tls
 from .logs import HOME
 
 CONFIG = HOME / "executor.json"
@@ -78,7 +79,7 @@ def api(token: str, method: str, wait: float = 15, **params):
     url = f"https://api.telegram.org/bot{token}/{method}"
     data = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None}).encode()
     try:
-        with urllib.request.urlopen(url, data=data, timeout=wait) as r:
+        with urllib.request.urlopen(url, data=data, timeout=wait, context=tls.context()) as r:
             body = json.loads(r.read())
     except urllib.error.HTTPError as e:
         try:

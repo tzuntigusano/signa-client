@@ -33,7 +33,7 @@ jobs:
       - name: The packaged app has everything inside
         run: |
           APP=dist/Signa.app/Contents/MacOS/Signa
-          "$APP" --module signa.selfcheck
+          "$APP" --module signa.selfcheck --net
           # sin cuenta, el supervisor del Gateway explica cómo se usa y sale con 1
           set +e; "$APP" --module signa.gateway; test $? -eq 1
 

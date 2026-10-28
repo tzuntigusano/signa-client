@@ -1,7 +1,8 @@
 """Comprobación del empaquetado (la usa el workflow de Mac): la app instalada carga TODO lo que necesita (Qt, IBKR, el
-código del copiador, IBC, el llavero) y sale con 0. No conecta a nada.
+código del copiador, IBC, el llavero) y sale con 0. Con «--net» además abre https con Telegram (en Mac, sin los
+certificados de certifi, falla: «Can't reach Telegram»).
 
-    Signa --module signa.selfcheck"""
+    Signa --module signa.selfcheck [--net]"""
 import importlib
 import os
 import sys
@@ -21,6 +22,14 @@ def main() -> int:
         if not f.exists():
             print(f"missing: {f}")
             return 1
+    if "--net" in sys.argv:
+        from signa.core import bots
+        try:
+            bots.api("1:selfcheck", "getMe")
+        except bots.BotError as e:  # token falso: Telegram tiene que CONTESTAR que no lo conoce
+            if "doesn't recognise" not in str(e):
+                print(f"telegram: {e}")
+                return 1
     print("selfcheck OK")
     return 0
 
