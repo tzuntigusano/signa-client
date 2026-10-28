@@ -15,8 +15,13 @@ from signa.core.appkey import forget_key, saved_key, store_key  # noqa: F401 (la
 
 RETRY = (2, 5, 10, 30)
 REPLIES = ("export", "delete_account", "trade_detail", "trade_quote", "trade_action", "risk",  # -> reply
-           "close_all", "stats") + ("admin_state", "admin_invite", "admin_enable", "admin_disable",
-                                      "admin_paper_only", "admin_engine", "admin_filters")
+           "close_all", "stats")
+
+
+def is_reply(kind) -> bool:
+    """Respuestas a request() (van a la señal reply). Las del panel de admin, todas: una acción nueva del servidor
+    no puede quedarse sin respuesta en la app (le pasó a admin_access: la clave se perdía)."""
+    return kind in REPLIES or str(kind or "").startswith("admin_")
 SYNC_EVERY = 300  # s: la app se pone al dia con el servidor (correcciones de calls, ajustes cambiados en otro PC)
 
 
@@ -154,7 +159,7 @@ class Client(QObject):
                             await ws.send_json({"type": "sync"})
                         elif d.get("type") == "alert":
                             self.alert.emit(d)
-                        elif d.get("type") in REPLIES:
+                        elif is_reply(d.get("type")):
                             self.reply.emit(d)
                         elif d.get("type") == "trades":
                             self.trades.emit(d.get("trades", []))

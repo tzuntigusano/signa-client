@@ -94,6 +94,11 @@ class AdminScreen(Page):
                 QMessageBox.Yes:
             self._send("admin_access", discord_id=r["discord_id"], approve=False)
 
+    def _reissue(self, u: dict):
+        if QMessageBox.question(self, "New key", f"Create a new invite key for {u['name']}? When they use it, "
+                                "Signa on their previous computer is signed out.") == QMessageBox.Yes:
+            self._send("admin_reissue", user_id=u["id"])
+
     def _users(self, users: list[dict], provs: list[dict]) -> QWidget:
         card = Card()
         for u in users:
@@ -107,7 +112,11 @@ class AdminScreen(Page):
             role = tag("Admin", "accent") if u.get("role") == "admin" else tag(u.get("status") or "active", "neutral")
             seen = (u.get("last_seen") or "never")[:16].replace("T", " ")
             sub = f"@{u['discord_handle']}  ·  last seen {seen}" if u.get("discord_handle") else f"Last seen {seen}"
-            card.add_row(u["name"], sub, widget(hbox(role, *boxes, spacing=12)))
+            new_key = button("New key", "quiet")
+            new_key.setToolTip("A new one-time invite key for this user (another computer, or a lost key). "
+                               "Their unused keys stop working.")
+            new_key.clicked.connect(lambda _=False, u=u: self._reissue(u))
+            card.add_row(u["name"], sub, widget(hbox(role, *boxes, new_key, spacing=12)))
         name = QLineEdit()
         name.setPlaceholderText("Name of the new user")
         invite = button("Create invite", "primary")

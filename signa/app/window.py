@@ -319,7 +319,7 @@ class MainWindow(QMainWindow):
             else:
                 if d["type"] == "admin_invite":
                     adm.show_invite(d["name"], d["code"])
-                elif d["type"] == "admin_access" and d.get("code"):
+                elif d["type"] in ("admin_access", "admin_reissue") and d.get("code"):
                     adm.show_invite(d["name"], d["code"], d.get("handle"))
                 adm.note("Saved")
                 self.client.request("admin_state")
