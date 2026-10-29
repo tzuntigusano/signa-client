@@ -56,7 +56,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -n "$MAC_MIN_OS_STRICT" ]; then
-            sed 's/^PySide6-Essentials==.*/PySide6-Essentials==6.9.3/' requirements-app.txt > "$RUNNER_TEMP/req.txt"
+            # cryptography 49+ ya no publica ruedas para Mac Intel (solo arm64): la 48 (lo que usa la app, verificar
+            # Ed25519, es igual)
+            sed 's/^PySide6-Essentials==.*/PySide6-Essentials==6.9.3/; s/^cryptography==.*/cryptography==48.0.1/' \
+              requirements-app.txt > "$RUNNER_TEMP/req.txt"
             echo "pyinstaller==6.16.0" >> "$RUNNER_TEMP/req.txt"
             pip download -d "$RUNNER_TEMP/wheels" --only-binary=:all: --platform "macosx_${MAC_MIN_OS/./_}_x86_64" \
               --python-version 3.12 --implementation cp -r "$RUNNER_TEMP/req.txt"
