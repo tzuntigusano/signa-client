@@ -78,6 +78,7 @@ class SettingsScreen(Page):
     delete_requested = Signal(bool)  # ¿borrar también lo de este PC?
     risk_save = Signal(dict)  # límites de riesgo -> servidor
     update_ready = Signal()  # el instalador ya está lanzado: la app debe cerrarse
+    new_key_requested = Signal()  # «Use a new invite key»: la ventana olvida la clave y enseña Welcome
 
     def __init__(self, theme_mode: str):
         super().__init__("Settings")
@@ -266,6 +267,10 @@ class SettingsScreen(Page):
         export = button("Export my data")
         export.clicked.connect(self.export_requested)
         self.privacy.add_row("Your data", "Everything the Signa server keeps about you, as a JSON file.", export)
+        new_key = button("Use a new key…")
+        new_key.clicked.connect(self.new_key_requested)
+        self.privacy.add_row("Invite key", "Got a new invite key from the admin? Enter it here. Your bots, IBKR "
+                             "logins and settings stay.", new_key)
         delete = button("Delete account", "danger")
         delete.clicked.connect(self._delete)
         if self.role == "admin":

@@ -54,6 +54,7 @@ class MainWindow(QMainWindow):
                       "app_latest": None, "role": None}
         self.update_offered: dict[str, float] = {}  # versión -> hasta cuándo no se vuelve a avisar («Later»)
         self.update_box = None  # el aviso de versión nueva, si está abierto
+        self.key_offered = False  # el aviso de «clave no válida» ya salió en esta sesión
         if demo is not None:
             self.state["trades"] = demo
         self.quitting = False
@@ -96,6 +97,31 @@ class MainWindow(QMainWindow):
         self._paint_status()
         if self.screens:
             self.screens["overview"].set_data(status=st)
+        if st == "rejected" and not self.key_offered and self.demo is None:
+            self.key_offered = True  # una vez por sesión (también está en Settings › Invite key)
+            self._new_key(rejected=True)
+
+    def _new_key(self, rejected: bool = False):
+        """«Use a new invite key»: olvida SOLO la clave de este PC y enseña Welcome para meter la nueva (la misma
+        cuenta: historial y proveedores siguen). Bots de Telegram, logins de IBKR y ajustes se quedan. El ejecutor
+        relee la clave del llavero al reintentar, así que se pone al día solo."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Signa key")
+        box.setIcon(QMessageBox.Warning if rejected else QMessageBox.Question)
+        box.setText("This computer's Signa key isn't valid anymore" if rejected else "Use a new invite key?")
+        box.setInformativeText(("The admin gave you a new key, or your access was paused. " if rejected else "")
+                               + "Enter the new invite key the admin sent you. Your Telegram bots, IBKR logins and "
+                               "settings stay on this computer.")
+        go = box.addButton("Enter a new invite key", QMessageBox.AcceptRole)
+        box.addButton("Later" if rejected else "Cancel", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not go:
+            return
+        if self.client is not None:
+            self.client.stop()
+            self.client = None
+        net.forget_key()
+        self._build()  # sin clave: Welcome; al registrarse, _register reconecta
 
     def _on_welcome(self, d: dict):
         """Al conectar y en cada sincronización. Los proveedores con cambios SIN guardar no se pisan."""
@@ -217,6 +243,7 @@ class MainWindow(QMainWindow):
         self.screens["settings"].export_requested.connect(lambda: self.client.request("export") if self.client
                                                           else None)
         self.screens["settings"].delete_requested.connect(self._delete_account)
+        self.screens["settings"].new_key_requested.connect(self._new_key)
         self.screens["settings"].update_ready.connect(self._quit)  # el instalador la vuelve a abrir
         self.screens["settings"].risk_save.connect(
             lambda f: self.client.request("save_risk", fields=f) if self.client else None)

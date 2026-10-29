@@ -312,15 +312,22 @@ class Executor:
         asyncio.ensure_future(self.status_loop())
         asyncio.ensure_future(self.watch_bots())
         asyncio.ensure_future(self.ticks())
-        attempt = 0
+        attempt, rejected = 0, False
         while True:
+            # clave rechazada: se relee del llavero por si el usuario metió una nueva en la app (Settings › Invite
+            # key). Solo entonces: en Mac cada lectura del llavero puede pedir su contraseña
+            if rejected:
+                self.key, rejected = saved_key() or self.key, False
             try:
                 async with aiohttp.ClientSession() as s, s.ws_connect(
                         link.url("/exec"), ssl=link.ssl_context(), heartbeat=30, max_msg_size=4 * 1024 * 1024) as ws:
                     await ws.send_json({"type": "auth", "key": self.key, "version": __version__})
-                    hello = await ws.receive_json(timeout=15)
-                    if hello.get("type") != "welcome":
-                        raise ConnectionError(f"rejected: {hello}")
+                    hello = await ws.receive(timeout=15)
+                    if hello.type != aiohttp.WSMsgType.TEXT or json.loads(hello.data).get("type") != "welcome":
+                        rejected = ws.close_code == 4000 or hello.type in (aiohttp.WSMsgType.CLOSE,
+                                                                           aiohttp.WSMsgType.CLOSED)
+                        raise ConnectionError(f"rejected ({ws.close_code or hello.type})")
+                    hello = json.loads(hello.data)
                     self.ws, attempt = ws, 0
                     log(f"connected to signahub as {hello.get('user')}")
                     async for m in ws:
@@ -332,7 +339,7 @@ class Executor:
                     if ws.close_code == 4000:
                         log("the server rejected this app key: stopping")
                         return
-            except (aiohttp.ClientError, ConnectionError, asyncio.TimeoutError, OSError, TypeError) as e:
+            except (aiohttp.ClientError, ConnectionError, asyncio.TimeoutError, OSError, TypeError, ValueError) as e:
                 self.ws = None
                 wait = RETRY[min(attempt, len(RETRY) - 1)]
                 attempt += 1
