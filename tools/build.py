@@ -20,6 +20,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -164,8 +165,14 @@ def build_mac(app: Path) -> list[Path]:
     (stage / "Applications").symlink_to("/Applications")  # arrastrar Signa aquí = instalar
     dmg = DIST / f"Signa-{__version__}-mac-{arch}.dmg"
     dmg.unlink(missing_ok=True)
-    subprocess.run(["hdiutil", "create", "-volname", "Signa", "-srcfolder", str(stage), "-ov", "-format", "UDZO",
-                    str(dmg)], check=True)
+    for attempt in range(5):  # en los Mac de GitHub hdiutil falla a veces con «Resource busy» (29/10): se reintenta
+        r = subprocess.run(["hdiutil", "create", "-volname", "Signa", "-srcfolder", str(stage), "-ov", "-format",
+                            "UDZO", str(dmg)])
+        if r.returncode == 0:
+            break
+        time.sleep(5 * (attempt + 1))
+    else:
+        raise SystemExit("hdiutil create failed 5 times")
     return [dmg, zip_path]
 
 
