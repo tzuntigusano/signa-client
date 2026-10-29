@@ -71,7 +71,7 @@ class MainWindow(QMainWindow):
             self._connect()
 
     # --- servidor ------------------------------------------------------------------------------
-    def _connect(self):
+    def _connect(self, new_key: bool = False):
         self.client = self.client_factory()
         self.client.status.connect(self._on_status)
         self.client.welcome.connect(self._on_welcome)
@@ -86,7 +86,7 @@ class MainWindow(QMainWindow):
             from .local import start_services
             from .screens.telegram import Job
             log = Log("app")
-            j = Job(start_services)
+            j = Job(lambda: start_services(new_key))
             j.done.connect(lambda res, err: log("app", f"started: {', '.join(res)}" if res else err or "all running"))
             self.jobs.append(j.start())
 
@@ -357,7 +357,7 @@ class MainWindow(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
         self._build()
-        self._connect()
+        self._connect(new_key=True)  # el ejecutor que corra aún lleva la clave vieja: se reinicia
 
     def _set_theme(self, mode: str):
         self.theme_mode = mode

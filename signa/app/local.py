@@ -45,6 +45,42 @@ def read_status() -> dict | None:
     return st if age < STALE else None
 
 
+def _raw_status() -> dict:
+    try:
+        return json.loads(STATUS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def stop_executor(wait: float = 10) -> int:
+    """Para el ejecutor de este PC (el candado no dice de quién es: se busca por su orden). Devuelve cuántos."""
+    import psutil
+    procs = []
+    for p in psutil.process_iter(["cmdline"]):
+        try:
+            cmd = p.info["cmdline"] or []
+        except (psutil.Error, KeyError):
+            continue
+        if "signa.executor" in cmd and ("-m" in cmd or "--module" in cmd) and p.pid != os.getpid():
+            procs.append(p)
+    for p in procs:
+        try:
+            p.terminate()
+        except psutil.Error:
+            pass
+    _gone, alive = psutil.wait_procs(procs, timeout=wait)
+    for p in alive:
+        try:
+            p.kill()
+        except psutil.Error:
+            pass
+    for _ in range(int(wait * 10)):  # que suelte el candado antes de arrancar el nuevo
+        if not executor_running():
+            break
+        time.sleep(0.1)
+    return len(procs)
+
+
 def _spawn(module: str):
     runtime.spawn(runtime.module_cmd(module))
 
@@ -53,10 +89,16 @@ def start_executor():
     _spawn("signa.executor")
 
 
-def start_services() -> list[str]:
+def start_services(new_key: bool = False) -> list[str]:
     """Al abrir Signa (también al iniciar Windows): agente, ejecutor y los Gateway con login guardado que no estén
-    ya en marcha. Devuelve lo arrancado y los avisos. BLOQUEA (escanea procesos): la app lo llama en un hilo."""
+    ya en marcha. Devuelve lo arrancado y los avisos. BLOQUEA (escanea procesos): la app lo llama en un hilo.
+    Un ejecutor de OTRA versión (sigue vivo tras actualizar, con su clave vieja en memoria y, en Mac, quizá desde
+    un .app que ya no existe) o recién metida una clave nueva (`new_key`): se para y se arranca el de ahora."""
+    from .. import __version__
     done = []
+    if executor_running() and (new_key or _raw_status().get("version") != __version__):
+        if stop_executor():
+            done.append("old executor stopped")
     pieces = [("signa.executor", EXECUTOR_PORT, "executor")]
     # el agente lee las notificaciones de WINDOWS (la fuente de Hacedor): solo en el PC configurado como fuente
     if runtime.IS_WIN and (HOME / "agent.json").exists():

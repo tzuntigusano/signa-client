@@ -282,7 +282,8 @@ class Executor:
             if b is not None and not b.ib.isConnected() and gw and name not in self.reconnecting:
                 asyncio.ensure_future(self.reconnect(name, b))  # p. ej. tras reiniciar el Gateway
             accounts[name] = account_status(self.cfg[name], self.brokers.get(name), gw)
-        return {"at": datetime.now(timezone.utc).isoformat(), "server": self.ws is not None and not self.ws.closed,
+        return {"at": datetime.now(timezone.utc).isoformat(), "version": __version__,
+                "server": self.ws is not None and not self.ws.closed,
                 "accounts": accounts, "bots": sorted(self.bots)}
 
     async def reconnect(self, name: str, b: Broker):
