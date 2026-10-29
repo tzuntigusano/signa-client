@@ -3,7 +3,8 @@ la derecha encima de la app; se cierra con la flecha de arriba a la izquierda, c
 
 Mientras está abierto pide bid/ask cada segundo (y solo entonces). Las acciones son las mismas que los botones de
 las tarjetas de Telegram (las hace el motor en el servidor: manual.py) y mandan sobre las reglas automáticas de esa
-operación. No decide nada: manda lo que pulsas y enseña lo que responde el servidor."""
+operación. Comprar y vender, a mercado o con una ORDEN a tu precio (límite: la de compra vale el día; la de venta
+queda como tu take profit). No decide nada: manda lo que pulsas y enseña lo que responde el servidor."""
 import re
 
 from PySide6.QtCore import QRect, Qt, QTimer, Signal
@@ -16,6 +17,15 @@ from .trades import STATUS, contract_label, money, when
 WIDTH = 440
 STOP_PCTS = (-10, -20, -30, -50)
 TP_PCTS = (25, 50, 100, 200)
+
+
+def parse_price(text: str) -> float | None:
+    """El precio de una orden límite (0.85 · 0,85): > 0, o None."""
+    try:
+        px = round(float((text or "").strip().replace(",", ".")), 2)
+    except ValueError:
+        return None
+    return px if px > 0 else None
 
 
 def parse_level(text: str, kind: str) -> dict | None:
@@ -259,9 +269,29 @@ class TradeDrawer(QWidget):
             btns.append(b)
         return widget(grid), btns
 
+    def _order_type(self, side: str) -> tuple[Segmented, QLineEdit]:
+        """Market | Limit + el precio de la orden (al pasar a Limit se rellena con el precio de ahora)."""
+        seg = Segmented([("market", "Market"), ("limit", "Limit")], "market")
+        price = QLineEdit()
+        price.setPlaceholderText("Limit price e.g. 0.85")
+        price.setFixedWidth(150)
+        price.hide()
+
+        def switch(key):
+            price.setVisible(key == "limit")
+            q = self.quote or {}
+            now = q.get("bid") if side == "sell" else q.get("ask")
+            if key == "limit" and not price.text() and now:
+                price.setText(f"{now:.2f}")
+        seg.changed.connect(switch)
+        return seg, price
+
     def _sell_card(self, held: int) -> QFrame:
         step = Stepper(1, max(1, held), max(1, held))
         go = button("", "sell")
+        kind, price = self._order_type("sell")
+        hint = label("", "small", wrap=True)
+        hint.hide()
         items = {}  # sin repetidos: con 1 solo «All»; con 2, «1» y «All»
         for text, v in (("All", held), ("Half", max(1, held // 2)), ("1", 1)):
             items.setdefault(v, text)
@@ -271,14 +301,37 @@ class TradeDrawer(QWidget):
         for b in btns:
             b.setCheckable(True)
 
-        def sync(v):
-            go.setText(f"Sell {v} at market")
+        def sync(*_a):
+            v = step.value
+            px = parse_price(price.text())
+            if kind.value == "limit":
+                go.setText(f"Sell {v} at {px:.2f} (limit)" if px else f"Sell {v} at your price")
+                bid = (self.quote or {}).get("bid")
+                hint.setText("Works as your take profit order: it replaces the current one and stays until it fills."
+                             + (" At or below the bid it fills now." if px and bid and px <= bid else ""))
+            else:
+                go.setText(f"Sell {v} at market")
+            hint.setVisible(kind.value == "limit")
             for b, val in zip(btns, values):
                 b.setChecked(val == v)
         step.changed.connect(sync)
-        sync(step.value)
-        go.clicked.connect(lambda: self._send("sell", step.value))
-        return self._card(f"Sell · you hold {held}", widget(vbox(hbox(opts, step, spacing=10), go, spacing=10)))
+        kind.changed.connect(sync)
+        price.textChanged.connect(sync)
+        sync()
+
+        def submit():
+            if kind.value != "limit":
+                return self._send("sell", step.value)
+            px = parse_price(price.text())
+            if px is None:
+                hint.setText("Type the price of your sell order (e.g. 0.85)")
+                hint.show()
+                return
+            self._send("sell_limit", {"qty": step.value, "price": px})
+        go.clicked.connect(submit)
+        price.returnPressed.connect(submit)
+        return self._card(f"Sell · you hold {held}", widget(vbox(hbox(opts, step, spacing=10),
+                                                                 hbox(kind, None, price), hint, go, spacing=10)))
 
     def _level_card(self, kind: str, q: dict) -> QFrame:
         entry = q.get("entry")
@@ -334,8 +387,9 @@ class TradeDrawer(QWidget):
         amount.setPlaceholderText("$ e.g. 500")
         amount.setFixedWidth(120)
         amount.hide()
-        hint = label("", "small")
+        hint = label("", "small", wrap=True)
         go = button(f"{verb} at market", "buy")
+        kind, price = self._order_type("buy")
 
         def usd():
             try:
@@ -344,14 +398,24 @@ class TradeDrawer(QWidget):
                 return None
 
         def estimate(*_a):
-            ask = (self.quote or {}).get("ask")
-            if not ask:
-                hint.setText("Waiting for the ask…")
-            elif mode["v"] == "amount":
-                hint.setText(f"≈ {int(usd() // (ask * 100))} contracts at ask {ask:.2f}" if usd() else
-                             f"1 contract ≈ ${ask * 100:,.0f} at ask {ask:.2f}")
+            limit = kind.value == "limit"
+            px = parse_price(price.text()) if limit else (self.quote or {}).get("ask")
+            at = f"at {px:.2f}" if limit and px else f"at ask {px:.2f}" if px else ""
+            go.setText(f"{verb} at {px:.2f} (limit)" if limit and px else f"{verb} at your price" if limit
+                       else f"{verb} at market")
+            if not px:
+                hint.setText("Type the price of your buy order (e.g. 0.85)" if limit else "Waiting for the ask…")
+                return
+            if mode["v"] == "amount":
+                text = (f"≈ {int(usd() // (px * 100))} contracts {at}" if usd() else
+                        f"1 contract ≈ ${px * 100:,.0f} {at}")
             else:
-                hint.setText(f"≈ ${step.value * ask * 100:,.0f} at ask {ask:.2f}")
+                text = f"≈ ${step.value * px * 100:,.0f} {at}"
+            ask = (self.quote or {}).get("ask")
+            if limit:
+                text += (" · at or above the ask it fills now" if ask and px >= ask else
+                         " · buy order valid today: if it fills, Signa adds it with its stop loss and take profit")
+            hint.setText(text)
 
         def switch(key):
             mode["v"] = key
@@ -361,18 +425,29 @@ class TradeDrawer(QWidget):
         seg.changed.connect(switch)
         step.changed.connect(estimate)
         amount.textChanged.connect(estimate)
+        kind.changed.connect(estimate)
+        price.textChanged.connect(estimate)
 
         def submit():
+            extra = {}
+            if kind.value == "limit":
+                px = parse_price(price.text())
+                if px is None:
+                    hint.setText("Type the price of your buy order (e.g. 0.85)")
+                    return
+                extra = {"limit": px}
             if mode["v"] == "amount":
                 if not usd():
                     hint.setText("Type an amount in $")
                     return
-                self._send("buy", {"amount": usd()})
+                self._send("buy", {"amount": usd(), **extra})
             else:
-                self._send("buy", {"contracts": step.value})
+                self._send("buy", {"contracts": step.value, **extra})
         go.clicked.connect(submit)
+        price.returnPressed.connect(submit)
         estimate()
-        return self._card(verb, widget(vbox(hbox(seg, None, step, amount), hint, go, spacing=10)))
+        return self._card(verb, widget(vbox(hbox(seg, None, step, amount), hbox(kind, None, price), hint, go,
+                                            spacing=10)))
 
 
 class Stepper(QWidget):

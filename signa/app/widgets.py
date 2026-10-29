@@ -230,6 +230,8 @@ class Segmented(QFrame):
     def __init__(self, options: list[tuple[str, str]], current: str):
         super().__init__()
         self.setObjectName("Seg")
+        self.value = current
+        self.changed.connect(lambda k: setattr(self, "value", k))  # 1ª conexión: ya puesto para las demás
         lay = QHBoxLayout(self)
         lay.setContentsMargins(2, 2, 2, 2)  # hueco para que el botón marcado no se coma la esquina redonda
         lay.setSpacing(2)

@@ -172,7 +172,12 @@ def demo_action(q: dict, action: str, value) -> str:
         if not q["held"]:
             q["status"] = "closed"
         return f"✅ Sold {n} at {bid:.2f} · demo: nothing was sent"
+    if action == "sell_limit":
+        q.update(tp1=v["price"], reason="manual")
+        return f"📤 Sell order {v['qty']} at {v['price']:.2f} · demo: nothing was sent"
     if action == "buy":
         n = v.get("contracts") or int(v.get("amount", 0) // ((q.get("bid") or 1) * 103))
+        if v.get("limit"):
+            return f"⏳ Buy order {n} at {v['limit']:.2f} (valid today) · demo: nothing was sent"
         return f"✅ Bought {n} at {q.get('ask') or 0:.2f} · demo: nothing was sent"
     return "demo"
