@@ -1,12 +1,17 @@
 # Construye Signa para Mac en los Mac de GitHub (Apple Silicon e Intel): Signa.app en un .dmg para instalar y en un
 # .zip para las actualizaciones. La FIRMA de las actualizaciones no se hace aquí: tools/release.py, en el PC del
-# admin, descarga estos artefactos, los firma con su clave y los publica.
+# admin, los descarga del release «v<versión>» de este repo, los firma con su clave y los publica.
+# (Al release y no como artefactos: en un repo privado los artefactos tienen una cuota de almacenamiento muy pequeña y
+# el 29/10 ya no dejaba subir ninguno; los releases no cuentan para ella.)
 name: Build Signa for Mac
 
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+
+permissions:
+  contents: write  # crear el release de la versión y subirle los ficheros
 
 jobs:
   build:
@@ -37,10 +42,16 @@ jobs:
           # sin cuenta, el supervisor del Gateway explica cómo se usa y sale con 1
           set +e; "$APP" --module signa.gateway; test $? -eq 1
 
-      - uses: actions/upload-artifact@v5
-        with:
-          name: signa-mac-${{ runner.arch }}
-          path: |
-            dist/*.dmg
-            dist/Signa-mac-*.zip
-          if-no-files-found: error
+      - name: Upload to the release of this version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=$(python -c "import signa; print(signa.__version__)")
+          # los dos Mac llegan a la vez: el que no lo crea, lo encuentra hecho
+          for i in 1 2 3 4 5; do
+            gh release view "v$V" >/dev/null 2>&1 && break
+            gh release create "v$V" --title "Signa $V" --notes "Mac builds (signed and published by tools/release.py)" \
+              && break
+            sleep 5
+          done
+          gh release upload "v$V" dist/*.dmg dist/Signa-mac-*.zip --clobber
