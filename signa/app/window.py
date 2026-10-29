@@ -353,7 +353,9 @@ class MainWindow(QMainWindow):
                     json.dump(d["data"], f, indent=2, ensure_ascii=False, default=str)
         elif str(d.get("type", "")).startswith("admin_") and "admin" in self.screens:
             adm = self.screens["admin"]
-            if not d.get("ok"):
+            if d["type"] in ("admin_user_status", "admin_user_logs"):  # Status & logs: a la ventana de ese usuario
+                adm.diag_reply(d)
+            elif not d.get("ok"):
                 adm.note(d.get("error") or "Failed", ok=False)
             elif d["type"] == "admin_state":
                 adm.set_state(d)

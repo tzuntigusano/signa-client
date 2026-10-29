@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 
 from ..core import link, release, runtime
+from ..core.logs import HOME
 
 
 class UpdateError(Exception):
@@ -68,11 +69,29 @@ def mac_script(zip_path: Path, app: Path, pid: int) -> str:
     new = zip_path.with_suffix("")
     # cerrada la app, fuera también el ejecutor y los supervisores (la misma .app con «--module»): si siguieran, la
     # versión nueva no podría arrancar los suyos. Los IB Gateway (Java) siguen funcionando.
+    # todo va a update.log (antes no quedaba rastro de por qué fallaba) y, si algo falla, se vuelve a dejar la .app
+    # de antes en su sitio y se abre: nunca se queda el Mac sin Signa
+    log = HOME / "update.log"
     return f"""#!/bin/sh
-while kill -0 {pid} 2>/dev/null; do sleep 0.5; done
+mkdir -p "{log.parent}"
+exec >>"{log}" 2>&1
+echo "== $(date) updating {app} with {zip_path.name}"
+n=0
+while kill -0 {pid} 2>/dev/null; do sleep 0.5; n=$((n+1)); [ $n -gt 240 ] && kill -9 {pid}; done
 pkill -f "{app}/Contents/MacOS/Signa"; sleep 2; pkill -9 -f "{app}/Contents/MacOS/Signa"
-rm -rf "{new}" && mkdir -p "{new}" && /usr/bin/ditto -x -k "{zip_path}" "{new}" || exit 1
-rm -rf "{app}.old" && mv "{app}" "{app}.old" && mv "{new}/Signa.app" "{app}" && rm -rf "{app}.old" "{new}"
+set -x
+rm -rf "{new}" && mkdir -p "{new}" && /usr/bin/ditto -x -k "{zip_path}" "{new}" && [ -d "{new}/Signa.app" ] || {{
+  echo "FAILED: could not unpack the update"; open "{app}"; exit 1; }}
+rm -rf "{app}.old"
+mv "{app}" "{app}.old" || {{ echo "FAILED: can't move the old app (permissions?)"; open "{app}"; exit 1; }}
+if mv "{new}/Signa.app" "{app}"; then
+  /usr/bin/xattr -dr com.apple.quarantine "{app}" 2>/dev/null
+  rm -rf "{app}.old" "{new}"
+  echo "OK: updated"
+else
+  echo "FAILED: can't put the new app in place; the old one goes back"
+  mv "{app}.old" "{app}"
+fi
 open "{app}"
 """
 
@@ -85,6 +104,12 @@ def install(path: Path):
         app = runtime.bundle()
         if app is None:
             raise UpdateError("Can't find Signa.app to update.")
+        if "/AppTranslocation/" in str(app):  # macOS la abre desde una copia temporal de solo lectura
+            raise UpdateError("macOS is running Signa from a temporary copy, so it can't replace itself. Quit Signa, "
+                              "drag Signa.app into Applications in Finder, open it from there and try again.")
+        if not os.access(app.parent, os.W_OK):
+            raise UpdateError(f"Signa can't replace itself in {app.parent} (no permission). Install the new version "
+                              "from its .dmg instead.")
         script = path.with_suffix(".sh")
         script.write_text(mac_script(path, app, os.getpid()))
         runtime.spawn(["/bin/sh", str(script)], cwd=str(path.parent))

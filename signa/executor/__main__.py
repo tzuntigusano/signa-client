@@ -20,7 +20,7 @@ from pathlib import Path
 import aiohttp
 
 from signa import __version__
-from signa.core import bots, link, wire
+from signa.core import bots, link, logs, wire
 from signa.core.appkey import saved_key
 from signa.core.logs import HOME, Log, single_instance
 
@@ -119,6 +119,8 @@ class Executor:
         """Una llamada del motor. Devuelve algo que se pueda mandar en JSON."""
         if method.startswith("tg_"):
             return await self.telegram(method, a)
+        if method == "diag":  # panel de admin › usuario › Status & logs: su estado y sus logs (sin secretos ni dinero)
+            return await asyncio.to_thread(logs.diagnostics, bool(a.get("logs")))
         b = self.broker(a.get("account", "paper"))
         if method == "ensure":
             await b.ensure()
