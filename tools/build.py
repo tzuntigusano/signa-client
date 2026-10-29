@@ -15,7 +15,9 @@ MAC (en un Mac: el workflow .github/workflows/mac.yml de GitHub Actions)
 Firmar y publicar una versión: tools/release.py."""
 import os
 import platform
+import plistlib
 import shutil
+import struct
 import subprocess
 import sys
 import zipfile
@@ -94,7 +96,61 @@ def sign_mac(app: Path):
     subprocess.run(["codesign", "--display", "--requirements", "-", str(app)], check=True)  # al log: su identidad
 
 
+def macho_min_os(path: Path) -> tuple[int, int] | None:
+    """El macOS mínimo con el que se compiló un binario Mach-O (LC_BUILD_VERSION / LC_VERSION_MIN_MACOSX), o None
+    si no es Mach-O. En uno «fat» (universal2), el mayor de sus arquitecturas."""
+    with open(path, "rb") as f:
+        head = f.read(4)
+    if len(head) < 4 or struct.unpack("<I", head)[0] not in (0xFEEDFACF, 0xCAFEBABE, 0xBEBAFECA):
+        return None
+    data = path.read_bytes()
+    if struct.unpack_from("<I", data)[0] != 0xFEEDFACF:  # fat (big endian)
+        found = []
+        for i in range(struct.unpack_from(">I", data, 4)[0]):
+            _cpu, _sub, off, size, _align = struct.unpack_from(">IIIII", data, 8 + 20 * i)
+            found.append(_thin_min_os(data[off:off + size]))
+        found = [v for v in found if v]
+        return max(found) if found else None
+    return _thin_min_os(data)
+
+
+def _thin_min_os(data: bytes) -> tuple[int, int] | None:
+    if len(data) < 32 or struct.unpack_from("<I", data)[0] != 0xFEEDFACF:
+        return None
+    p = 32
+    for _ in range(struct.unpack_from("<I", data, 16)[0]):
+        cmd, size = struct.unpack_from("<II", data, p)
+        if cmd in (0x32, 0x24):  # LC_BUILD_VERSION (minos en +12) · LC_VERSION_MIN_MACOSX (version en +8)
+            v = struct.unpack_from("<I", data, p + (12 if cmd == 0x32 else 8))[0]
+            return v >> 16, (v >> 8) & 0xFF
+        p += size
+    return None
+
+
+def mac_min_os(app: Path):
+    """Con MAC_MIN_OS (el workflow de Mac): lo declara en el Info.plist (un macOS más viejo dice «necesita macOS X»
+    en vez de abrir y cerrarse sin más, como pasó en un iMac con Monterey, 29/10) y, con MAC_MIN_OS_STRICT, falla
+    si algún binario de dentro pide un macOS más nuevo (Qt 6.12 pedía 14.4; numpy y el OpenSSL del Python de
+    GitHub, 14 y 15)."""
+    want = os.environ.get("MAC_MIN_OS")
+    if not want:
+        return
+    plist = app / "Contents" / "Info.plist"
+    info = plistlib.loads(plist.read_bytes())
+    info["LSMinimumSystemVersion"] = want
+    plist.write_bytes(plistlib.dumps(info))
+    limit = tuple(int(x) for x in want.split(".")[:2])
+    bad = []
+    for f in app.rglob("*"):
+        if f.is_file() and not f.is_symlink() and (v := macho_min_os(f)) and v > limit:
+            bad.append(f"{f.relative_to(app)}: macOS {v[0]}.{v[1]}")
+    print("\n".join(sorted(bad)) if bad else f"every binary runs on macOS {want} or newer")
+    if bad and os.environ.get("MAC_MIN_OS_STRICT"):
+        raise SystemExit(f"{len(bad)} binaries need a macOS newer than {want}")
+
+
 def build_mac(app: Path) -> list[Path]:
+    mac_min_os(app)  # antes de firmar: cambia el Info.plist
     sign_mac(app)
     arch = mac_arch()
     zip_path = DIST / f"Signa-mac-{arch}-{__version__}.zip"

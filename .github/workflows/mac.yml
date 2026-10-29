@@ -23,19 +23,48 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15-intel]   # arm64 · x86_64
+        include:
+          - os: macos-14          # arm64
+            min_os: "14.0"        # PySide6 6.12
+          # x86_64: también los iMac Intel que se quedaron en macOS 12 Monterey (29/10: la 0.1.10 se abría y se
+          # cerraba sola, Qt 6.12 pide 14). Python de python.org (10.13+, con su OpenSSL: el de setup-python trae uno
+          # de macOS 15), PySide6 6.9 (la última para macOS 12) y TODAS las ruedas para macOS 12
+          - os: macos-15-intel
+            min_os: "12.0"
+            legacy: true
     runs-on: ${{ matrix.os }}
+    env:
+      MAC_MIN_OS: ${{ matrix.min_os }}
+      MAC_MIN_OS_STRICT: ${{ matrix.legacy && '1' || '' }}
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
+        if: ${{ !matrix.legacy }}
         with:
           python-version: "3.12"
+
+      - name: Python from python.org (runs on macOS 10.13+)
+        if: ${{ matrix.legacy }}
+        run: |
+          curl -sSfLo "$RUNNER_TEMP/python.pkg" https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg
+          sudo installer -pkg "$RUNNER_TEMP/python.pkg" -target /
+          /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 -m venv "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
 
       - name: Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-app.txt pyinstaller==6.16.0
+          if [ -n "$MAC_MIN_OS_STRICT" ]; then
+            sed 's/^PySide6-Essentials==.*/PySide6-Essentials==6.9.3/' requirements-app.txt > "$RUNNER_TEMP/req.txt"
+            echo "pyinstaller==6.16.0" >> "$RUNNER_TEMP/req.txt"
+            pip download -d "$RUNNER_TEMP/wheels" --only-binary=:all: --platform "macosx_${MAC_MIN_OS/./_}_x86_64" \
+              --python-version 3.12 --implementation cp -r "$RUNNER_TEMP/req.txt"
+            pip install --no-index --find-links "$RUNNER_TEMP/wheels" -r "$RUNNER_TEMP/req.txt"
+          else
+            pip install -r requirements-app.txt pyinstaller==6.16.0
+          fi
+          python -c "import PySide6, sys; print('PySide6', PySide6.__version__, '· Python', sys.version)"
 
       # firma con el MISMO certificado en cada versión (tools/mac_sign_cert.py): así el llavero de macOS reconoce las
       # versiones nuevas como la misma app y no vuelve a pedir la contraseña tras cada actualización
