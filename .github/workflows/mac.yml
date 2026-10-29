@@ -7,6 +7,11 @@ name: Build Signa for Mac
 
 on:
   workflow_dispatch:
+    inputs:
+      upload:
+        description: "Upload to the release of this version (no = only build and check, e.g. to test the signing)"
+        type: boolean
+        default: true
   push:
     tags: ["v*"]
 
@@ -32,6 +37,27 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-app.txt pyinstaller==6.16.0
 
+      # firma con el MISMO certificado en cada versión (tools/mac_sign_cert.py): así el llavero de macOS reconoce las
+      # versiones nuevas como la misma app y no vuelve a pedir la contraseña tras cada actualización
+      - name: Signing certificate (temporary keychain)
+        env:
+          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: |
+          test -n "$MAC_CERT_P12" || { echo "::error::missing secret MAC_CERT_P12: run tools/mac_sign_cert.py"; exit 1; }
+          KC="$RUNNER_TEMP/signing.keychain-db"; KCPASS=$(openssl rand -hex 16)
+          echo "$MAC_CERT_P12" | base64 --decode > "$RUNNER_TEMP/sign.p12"
+          security create-keychain -p "$KCPASS" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KCPASS" "$KC"
+          security import "$RUNNER_TEMP/sign.p12" -k "$KC" -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPASS" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/sign.p12"
+          HASH=$(security find-certificate -c "Signa Code Signing" -Z "$KC" | awk '/SHA-1/{print $NF; exit}')
+          test -n "$HASH" || { echo "::error::signing certificate not found after import"; exit 1; }
+          echo "MAC_SIGN_IDENTITY=$HASH" >> "$GITHUB_ENV"
+
       - name: Build Signa.app, .dmg and update .zip
         run: python tools/build.py
 
@@ -43,6 +69,7 @@ jobs:
           set +e; "$APP" --module signa.gateway; test $? -eq 1
 
       - name: Upload to the release of this version
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.upload }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

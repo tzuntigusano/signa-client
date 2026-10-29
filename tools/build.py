@@ -81,7 +81,21 @@ def mac_arch() -> str:
     return "arm64" if platform.machine() == "arm64" else "x86_64"
 
 
+def sign_mac(app: Path):
+    """Con MAC_SIGN_IDENTITY (el workflow de Mac: el certificado de tools/mac_sign_cert.py), la app entera firmada
+    con ESE certificado en vez de «ad hoc»: la misma identidad en todas las versiones = el llavero no vuelve a pedir
+    la contraseña al actualizar. Sin la variable (un Mac cualquiera), se queda la firma ad hoc de PyInstaller."""
+    ident = os.environ.get("MAC_SIGN_IDENTITY")
+    if not ident:
+        print("MAC_SIGN_IDENTITY not set: ad-hoc signature (the keychain will ask again after each update)")
+        return
+    subprocess.run(["codesign", "--force", "--deep", "--timestamp=none", "--sign", ident, str(app)], check=True)
+    subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
+    subprocess.run(["codesign", "--display", "--requirements", "-", str(app)], check=True)  # al log: su identidad
+
+
 def build_mac(app: Path) -> list[Path]:
+    sign_mac(app)
     arch = mac_arch()
     zip_path = DIST / f"Signa-mac-{arch}-{__version__}.zip"
     zip_path.unlink(missing_ok=True)
