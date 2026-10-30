@@ -129,3 +129,11 @@ def find_start(token: str, offset: int | None = None) -> tuple[int | None, dict 
 
 def send(token: str, chat_id: str, text: str):
     api(token, "sendMessage", chat_id=chat_id, text=text)
+
+
+def send_test_card(token: str, chat_id: str, provider: str):
+    """La tarjeta de prueba (core.test_card): una call falsa con botones que responden sin operar."""
+    from . import test_card
+    text, buttons = test_card.render(test_card.new(provider))
+    api(token, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML",
+        reply_markup=json.dumps({"inline_keyboard": buttons}))

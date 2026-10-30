@@ -109,6 +109,7 @@ QPushButton[kind="primary"]:disabled {{ background: {c['acbg']}; border-color: {
 QLabel[tone="warn"] {{ color: {c['warn']}; }}
 QPushButton[kind="danger"] {{ color: {c['bad']}; border-color: {c['bad']}; }}
 QPushButton[kind="key"] {{ background: {c['acbg']}; border: 0; color: {c['ac']}; font-weight: 600; font-size: 9pt; }}
+QPushButton[kind="sellrow"] {{ background: {c['bad']}; border: 0; color: {c['on']}; font-weight: 600; font-size: 9pt; }}
 QPushButton[kind="opt"] {{ background: {c['sub']}; border: 1px solid {c['line']}; border-radius: 6px; padding: 0 4px; min-height: 32px; font-family: "{mono}"; font-size: 9pt; }}
 QPushButton[kind="opt"]:hover {{ background: {c['acbg']}; border-color: {c['ac']}; color: {c['ac']}; }}
 QPushButton[kind="opt"]:checked {{ background: {c['acbg']}; border-color: {c['ac']}; color: {c['ac']}; font-weight: 600; }}

@@ -280,7 +280,7 @@ class TelegramScreen(Page):
             return
         btn.setEnabled(False)
         btn.setText("Sending…")
-        j = Job(bots.send, t["token"], t["chat_id"], f"👋 Test from Signa · {p['name']}")
+        j = Job(bots.send_test_card, t["token"], t["chat_id"], p["name"])  # call falsa con botones que no operan
 
         def done(_res, err):
             btn.setEnabled(True)

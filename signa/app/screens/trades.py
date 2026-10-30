@@ -2,10 +2,11 @@
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QHeaderView, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from .. import theme
-from ..widgets import Card, Segmented, button, chip_cell, hbox, kpi, label, provider_chip, table, tag, vbox
+from ..widgets import Card, Segmented, button, chip_cell, hbox, kpi, label, provider_chip, table, tag, vbox, widget
 from .base import Page
 
 STATUS = {"open": ("Open", "accent"), "closed": ("Closed", "neutral"), "skipped": ("Not bought", "warn"),
@@ -79,6 +80,7 @@ def reason_label(reason: str | None, provider: str) -> str:
 TIMELINE_H = 380      # px: más alta, la cronología hace scroll (se abre abajo del todo: lo último)
 LIVE_EVERY = 10_000   # ms: las desplegadas que siguen vivas se vuelven a pedir solas
 LIVE_AFTER = 15 * 60  # s: y las cerradas hace poco (el servidor añade su charla hasta 5 min después)
+QUOTES_EVERY = 1000   # ms: el % de ahora de las abiertas
 # origen de cada evento del detalle: (texto, tono). Los del proveedor llevan su chip y el tipo de enlace
 ENGINE_KINDS = {"plan": ("Signa", "accent"), "skip": ("Skipped", "warn"), "order": ("Order", "accent"),
                 "result": ("IBKR", "neutral"), "fill": ("Filled", "good"), "stop": ("SL", "warn"),
@@ -99,6 +101,8 @@ def event_chip(e: dict, provider_name: str, provider_id: str) -> QWidget:
 class TradesScreen(Page):
     detail_requested = Signal(str)  # order_ref -> la ventana lo pide al servidor
     trade_requested = Signal(str)   # order_ref -> la ventana abre el drawer «Trade»
+    quotes_requested = Signal(list)  # [order_ref] de las abiertas a la vista -> precios (cada segundo)
+    sell_all_requested = Signal(str)  # order_ref -> la ventana confirma y vende todo a mercado
 
     def __init__(self):
         super().__init__("Trades")
@@ -112,10 +116,17 @@ class TradesScreen(Page):
         self.live.setInterval(LIVE_EVERY)
         self.live.timeout.connect(self._live_tick)
         self.live.start()
+        self.quotes: dict[str, dict] = {}  # order_ref -> {bid, entry, held…} (el último que llegó)
+        self.now_items: dict[str, object] = {}  # order_ref -> su celda «Now» (se cambia sin rehacer la tabla)
+        self.qtimer = QTimer(self)
+        self.qtimer.setInterval(QUOTES_EVERY)
+        self.qtimer.timeout.connect(self._ask_quotes)
+        self.qtimer.start()
         self.period = "today"
         self.seg = Segmented([("today", "Today"), ("week", "Last 7 days"), ("all", "All")], "today")
         self.seg.changed.connect(self._set_period)
-        self.bar = hbox(self.seg, None)
+        self.msg = label("", "small", wrap=True)
+        self.bar = hbox(self.seg, self.msg, None, spacing=12)
         self.add(self.bar)
         self.host = Card()
         self.add(self.host)
@@ -166,6 +177,7 @@ class TradesScreen(Page):
 
     def _paint(self):
         lay = self.host.lay
+        self.now_items = {}
         while lay.count():
             w = lay.takeAt(0).widget()
             if w:
@@ -213,29 +225,41 @@ class TradesScreen(Page):
                          contract_label(t.get("contract", ""), d), shown_qty,
                          prices(t.get("entry_px"), t.get("exit_px")),
                          reason_label(t.get("exit_reason"), name), pnl_text,
-                         f"{pct:+.1%}" if pct is not None else "", "", ""])
+                         f"{pct:+.1%}" if pct is not None else "", "", "", ""])
         tones = {}
         for i, t in enumerate(rows):
             p = t.get("pnl") or 0
             tones[(i, 6)] = tones[(i, 7)] = "good" if p > 0 else "bad" if p < 0 else "mu"
         tbl = table(["Opened", "Provider", "Contract", "Qty", "Entry → exit", "Exit / reason", "P&L", "% P&L",
-                     "Status", ""], data, right={3, 6, 7}, tones=tones, stretch=5)
+                     "Now", "Status", ""], data, right={3, 6, 7, 8}, tones=tones, stretch=5)
         tbl.horizontalHeader().setMinimumSectionSize(40)
         # anchos fijos ANTES de meter chips y botones: si no, se quedan con el ancho de antes y salen cortados
-        for col, w in ((1, 130), (8, 120), (9, 86)):
+        for col, w in ((1, 130), (8, 70), (9, 120), (10, 176)):
             tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
             tbl.setColumnWidth(col, w)
         for i, t in enumerate(rows):
             tbl.setCellWidget(i, 1, chip_cell(provider_chip(self.names.get(t["provider_id"], t["provider_id"]),
                                                             t["provider_id"])))
             name, kind = STATUS.get(t["status"], STATUS["error"])
-            tbl.setCellWidget(i, 8, chip_cell(tag(name, kind)))
+            tbl.setCellWidget(i, 9, chip_cell(tag(name, kind)))
             go = button("Trade", "key")  # igual en todas las filas
             go.setFixedSize(64, 28)
             go.setToolTip("Sell, set your stop loss / take profit or buy more" if t["status"] == "open"
                           else "Buy this contract now")
             go.clicked.connect(lambda _=False, ref=t["order_ref"]: self.trade_requested.emit(ref))
-            tbl.setCellWidget(i, 9, chip_cell(go))
+            sell = button("Sell all", "sellrow")  # rojo: que no se confunda con «Trade»
+            sell.setFixedSize(76, 28)
+            sell.setToolTip("Sell everything you hold of this trade at market (asks you first)")
+            sell.clicked.connect(lambda _=False, ref=t["order_ref"]: self.sell_all_requested.emit(ref))
+            sell.setVisible(self._holds(t))
+            sell.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            keep = sell.sizePolicy()
+            keep.setRetainSizeWhenHidden(True)  # «Trade» siempre en el mismo sitio
+            sell.setSizePolicy(keep)
+            tbl.setCellWidget(i, 10, chip_cell(widget(hbox(sell, go, spacing=10))))
+            if self._holds(t):
+                self.now_items[t["order_ref"]] = tbl.item(i, 8)
+                tbl.item(i, 8).setToolTip("Gain right now on what you hold (bid vs your entry), every second")
             if tbl.item(i, 5):
                 tbl.item(i, 5).setToolTip(t.get("exit_reason") or "")
             tbl.item(i, 2).setToolTip(f"{t.get('contract', '')} · "
@@ -259,6 +283,43 @@ class TradesScreen(Page):
         tbl.setCursor(Qt.PointingHandCursor)
         tbl.cellClicked.connect(lambda r, _c: self._toggle(row_of[r]) if row_of[r] else None)
         lay.addWidget(tbl)
+        self._paint_quotes()
+
+    # --- el % de ahora de las abiertas (cada segundo) --------------------------------------------------
+    @staticmethod
+    def _holds(t: dict) -> bool:
+        return t["status"] == "open" and bool(t.get("held"))
+
+    def _ask_quotes(self):
+        if not self.isVisible():
+            return
+        refs = [t["order_ref"] for t in self._visible() if self._holds(t)]
+        if refs:
+            self.quotes_requested.emit(refs)
+
+    def set_quotes(self, quotes: dict):
+        self.quotes.update(quotes or {})
+        self._paint_quotes()
+
+    def _paint_quotes(self):
+        c = theme.current
+        for ref, it in self.now_items.items():
+            q = self.quotes.get(ref) or {}
+            bid, entry = q.get("bid"), q.get("entry")
+            if bid is None or not entry:
+                it.setText("…")
+                it.setForeground(QColor(c["mu"]))
+                continue
+            pct = bid / entry - 1
+            it.setText(f"{pct:+.1%}")
+            it.setForeground(QColor(c["good"] if pct > 0 else c["bad"] if pct < 0 else c["mu"]))
+
+    def note(self, text: str, ok: bool = True):
+        """Resultado de «Sell all» (o lo que la ventana quiera decir encima de la tabla)."""
+        self.msg.setText(("✓  " if ok else "✕  ") + text if text else "")
+        self.msg.setProperty("tone", "good" if ok else "bad")
+        self.msg.style().unpolish(self.msg)
+        self.msg.style().polish(self.msg)
 
     # --- detalle de una operación ---------------------------------------------------------------------
     def _live(self, t: dict) -> bool:

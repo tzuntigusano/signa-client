@@ -20,7 +20,7 @@ from pathlib import Path
 import aiohttp
 
 from signa import __version__
-from signa.core import bots, link, logs, wire
+from signa.core import bots, link, logs, test_card, wire
 from signa.core.appkey import saved_key
 from signa.core.logs import HOME, Log, single_instance
 
@@ -102,6 +102,7 @@ class Executor:
         self.brokers: dict[str, Broker] = {}
         self.bots: dict[str, Telegram] = {}
         self.bot_tasks: dict[str, asyncio.Future] = {}
+        self.test_cards: dict[int, dict] = {}  # message_id -> estado de la tarjeta de prueba (core.test_card)
         self.account_subs: set[str] = set()
         self.reconnecting: set[str] = set()
         self.ws: aiohttp.ClientWebSocketResponse | None = None
@@ -233,7 +234,10 @@ class Executor:
                 continue
             bot = Telegram(t["token"], str(t["chat_id"]))
 
-            async def on_button(action, cid, msg_id, p=provider):
+            async def on_button(action, cid, msg_id, p=provider, bot=bot):
+                if test_card.is_test(action):  # la tarjeta de prueba: responde aquí mismo y no opera
+                    await self.test_button(bot, p, action, msg_id)
+                    return
                 await self._send({"type": "tg_button", "provider": p, "action": action, "cid": cid, "msg_id": msg_id})
 
             async def on_text(text, reply_to, p=provider):
@@ -242,6 +246,13 @@ class Executor:
             self.bots[provider] = bot
             self.bot_tasks[provider] = asyncio.ensure_future(bot.poll())
             log(f"Telegram bot for {provider} ready")
+
+    async def test_button(self, bot, provider: str, action: str, msg_id: int):
+        """Botón de la tarjeta de prueba (Telegram › Send test): cambia la tarjeta, sin orden ni IBKR."""
+        st = self.test_cards.setdefault(msg_id, test_card.new(provider))  # tras un reinicio, una nueva igual
+        note = test_card.press(st, action)
+        text, buttons = test_card.render(st, note)
+        await bot.edit(msg_id, text, buttons=buttons, html=True)
 
     async def watch_bots(self, every: float = 3):
         last = None

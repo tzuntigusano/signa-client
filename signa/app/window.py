@@ -61,6 +61,7 @@ class MainWindow(QMainWindow):
         self.wipe_local = False
         self.tray = self._tray() if services else None
         self.demo_quotes: dict[str, dict] = {}
+        self.selling: set[str] = set()  # «Sell all» de Trades en curso: su resultado sale encima de la tabla
         self.setWindowTitle("Signa")
         self.resize(1440, 860)
         self.setMinimumSize(1280, 720)  # Trades lleva muchas columnas (y llevará más)
@@ -234,6 +235,8 @@ class MainWindow(QMainWindow):
         self.screens["settings"].theme_changed.connect(self._set_theme)
         self.screens["trades"].detail_requested.connect(self._trade_detail)
         self.screens["trades"].trade_requested.connect(self._open_trade)
+        self.screens["trades"].quotes_requested.connect(self._trade_quotes)
+        self.screens["trades"].sell_all_requested.connect(self._sell_all)
         self.screens["stats"].stats_requested.connect(
             lambda period: self.client.request("stats", period=period) if self.client else None)
         if self.demo is not None:
@@ -409,9 +412,15 @@ class MainWindow(QMainWindow):
             (QMessageBox.warning if errors else QMessageBox.information)(self, "Close all", text)
         elif d.get("type") == "trade_quote":
             self.drawer.set_quote(d.get("order_ref", ""), d.get("quote") if d.get("ok") else None, d.get("error", ""))
+        elif d.get("type") == "trade_quotes":
+            if self.screens:
+                self.screens["trades"].set_quotes(d.get("quotes") or {})
         elif d.get("type") == "trade_action":
             ref = d.get("order_ref", "")
             self.drawer.set_result(ref, bool(d.get("ok")), d.get("note") or d.get("error") or "")
+            if ref in self.selling and self.screens:  # «Sell all» de la tabla: el resultado, encima de ella
+                self.selling.discard(ref)
+                self.screens["trades"].note(d.get("note") or d.get("error") or "", bool(d.get("ok")))
             self._after_action(ref)
         elif d.get("type") == "trade_detail":
             if self.screens:
@@ -487,6 +496,48 @@ class MainWindow(QMainWindow):
             self.client.request("trade_action", order_ref=ref, action=action, value=value)
         else:
             self.drawer.set_result(ref, False, "Not connected to the Signa server.")
+
+    def _trade_quotes(self, refs: list):
+        """Trades: el % de ahora de las abiertas (cada segundo, mientras se ve la pantalla)."""
+        if self.demo is not None:
+            from .demo import demo_quote
+            for ref in refs:
+                t = next((x for x in self.demo if x["order_ref"] == ref), None)
+                if t is not None:
+                    self.demo_quotes[ref] = demo_quote(t, self.demo_quotes.get(ref))
+            self.screens["trades"].set_quotes({r: self.demo_quotes[r] for r in refs if r in self.demo_quotes})
+        elif self.client is not None:
+            self.client.request("trade_quotes", order_refs=refs)
+
+    def _sell_all(self, ref: str):
+        """Trades › «Sell all»: vender TODO lo de esa operación a mercado. Siempre se confirma (un clic en una tabla
+        es fácil de dar sin querer); en la cuenta real, avisando de que es dinero de verdad."""
+        t = next((x for x in self.state.get("trades", []) if x["order_ref"] == ref), None)
+        if t is None:
+            return
+        live = t.get("account") == "live"
+        box = QMessageBox(self)
+        box.setWindowTitle("Sell all")
+        box.setIcon(QMessageBox.Warning if live else QMessageBox.Question)
+        box.setText(f"Sell all {t.get('held')} of {t.get('contract', '')} at market?")
+        box.setInformativeText("LIVE account: a real order with real money." if live else "Paper account.")
+        yes = box.addButton("Sell all", QMessageBox.AcceptRole)
+        box.addButton("Cancel", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not yes:
+            return
+        tr = self.screens["trades"]
+        if self.demo is not None:
+            from .demo import demo_action, demo_quote
+            q = self.demo_quotes.get(ref) or demo_quote(t, None)
+            self.demo_quotes[ref] = q
+            tr.note(demo_action(q, "sell", q.get("held") or t.get("held") or 0))
+        elif self.client is not None:
+            self.selling.add(ref)
+            tr.note(f"Selling all {t.get('held')} of {t.get('contract', '')} at market…")
+            self.client.request("trade_action", order_ref=ref, action="sell", value="all")
+        else:
+            tr.note("Not connected to the Signa server.", False)
 
     def _after_action(self, ref: str):
         """Tras operar: su cronología y la lista se ponen al día (el servidor ya lo apuntó en el diario)."""
