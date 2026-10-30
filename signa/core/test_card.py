@@ -14,7 +14,7 @@ SL_PCTS = (20, 30, 40, 50)
 
 def new(provider: str) -> dict:
     return {"provider": provider, "contract": "SPY 600C", "his": 0.95, "entry": 1.00, "qty": 2, "held": 2,
-            "sl": 0.40, "bid": 1.00, "realized": 0.0, "open": False, "menu": None}
+            "sl": 0.40, "bid": 1.00, "realized": 0.0, "open": False, "menu": None, "n": 2}
 
 
 def is_test(action: str) -> bool:
@@ -36,11 +36,19 @@ def render(st: dict, note: str = "") -> tuple[str, list]:
         head = f"{note}\n\n{head}"
     if not st["open"]:
         return head, [[_b("🔘 Show buttons", "shw")]]
-    lines = []
-    if not st["held"]:
-        lines.append(f"✅ Position already closed · {st['realized']:+,.0f}$ (test)")
-        return f"{head}\n\n" + "\n".join(lines), [[_b("🔄 Refresh", "srf")], [_b("🔼 Hide buttons", "hid")]]
     bid = st["bid"]
+    hide = [[_b("🔼 Hide buttons", "hid")]]
+    if not st["held"]:  # cerrada: volver a comprar (como las de verdad)
+        lines = [f"✅ Closed · {st['realized']:+,.0f}$ (test)",
+                 f"🟢 <b>Buy again {st['contract']}?</b> {st['n']} at market", f"Ask <b>{bid + 0.02:.2f}</b> · bid "
+                 f"{bid:.2f}"]
+        return f"{head}\n\n" + "\n".join(lines), [[_b("➖", "rbm"), _b(f"🟢 Buy {st['n']} at market", "rbb"),
+                                                    _b("➕", "rbp")], [_b("🔄 Refresh", "srf")]] + hide
+    if st["menu"] == "buy":
+        return (f"{head}\n\n🟢 <b>Buy more</b> at market: how many?",
+                [[_b("➖", "bmm"), _b(f"🟢 Buy {st['n']} more at market", "bmb"), _b("➕", "bmp")],
+                 [_b("⬅️ Back", "bmx")]])
+    lines = []
     lines.append(f"📍 You hold <b>{st['held']}</b> @ {e:.2f}")
     if st["sl"]:
         lines.append(f"🛑 Stop now {st['sl']:.2f}")
@@ -53,8 +61,9 @@ def render(st: dict, note: str = "") -> tuple[str, list]:
         rows = [btns[i:i + 2] for i in range(0, len(btns), 2)] + [[_b("⬅️ Back", "slb")]]
     else:
         rows = [[_b("🔴 Sell all (market)", "ssa"), _b("½ Sell half", "ssh")],
-                [_b("🛡 SL → BE", "sbe"), _b("🛑 Stop loss", "slm")], [_b("🔄 Refresh", "srf")]]
-    return f"{head}\n\n" + "\n".join(lines), rows + [[_b("🔼 Hide buttons", "hid")]]
+                [_b("🛡 SL → BE", "sbe"), _b("🛑 Stop loss", "slm")], [_b("🟢 Buy more", "bmo")],
+                [_b("🔄 Refresh", "srf")]]
+    return f"{head}\n\n" + "\n".join(lines), rows + hide
 
 
 def press(st: dict, action: str, rnd: random.Random | None = None) -> str:
@@ -70,10 +79,27 @@ def press(st: dict, action: str, rnd: random.Random | None = None) -> str:
     st["open"] = True
     if a == "srf":
         return ""
+    if a in ("rbm", "rbp", "bmm", "bmp"):
+        st["n"] = max(1, st["n"] + (1 if a.endswith("p") else -1))
+        return ""
+    if a in ("rbb", "bmb"):  # comprar (otra vez, o más): a «ask», en la tarjeta
+        ask, n, h = st["bid"] + 0.02, st["n"], st["held"]
+        st["entry"] = round((st["entry"] * h + ask * n) / (h + n), 2) if h else round(ask, 2)
+        st["held"] += n
+        st["qty"] = st["held"]
+        st["menu"] = None
+        return f"🧪 Test: bought {n}{' more' if h else ''} at {ask:.2f} · nothing was sent"
+    if a == "bmo":
+        st["menu"], st["n"] = "buy", 1
+        return ""
+    if a == "bmx":
+        st["menu"] = None
+        return ""
     if not st["held"]:
         return "ℹ️ That position is already closed (test)."
     if sell:
         pnl = (st["bid"] - st["entry"]) * 100 * sell
+        st["n"] = st["held"]  # si lo vende todo, «Buy again» ofrece lo mismo que tenía
         st["held"] -= sell
         st["realized"] += pnl
         return f"🧪 Test: sold {sell} at {st['bid']:.2f} ({st['bid'] / st['entry'] - 1:+.0%}, {pnl:+.0f}$) · nothing " \
