@@ -14,9 +14,10 @@ from . import client as net
 from . import theme
 from .screens.calls import CallsScreen
 from .screens.ibkr import IbkrScreen
+from .screens.mycalls import MyCallsScreen
 from .screens.overview import OverviewScreen
 from .screens.providers import ProvidersScreen
-from .screens.settings import SettingsScreen
+from .screens.settings import SettingsScreen, whats_new
 from .screens.stats import StatsScreen
 from .screens.telegram import TelegramScreen
 from .screens.drawer import TradeDrawer
@@ -26,7 +27,7 @@ from .widgets import hbox, icon, label, logo
 
 # (clave, texto); None = hueco entre grupos
 NAV = [("overview", "Overview"), ("providers", "Providers"), ("trades", "Trades"), ("stats", "Stats"),
-       ("calls", "Calls"), None,
+       ("calls", "Calls"), ("mycalls", "My calls"), None,
        ("ibkr", "IBKR"), ("telegram", "Telegram"), ("settings", "Settings")]
 HAS_ADMIN = not runtime.IS_MAC
 UPDATE_SNOOZE = 6  # h: tras «Later», el aviso de versión nueva vuelve a salir pasado este tiempo
@@ -51,7 +52,7 @@ class MainWindow(QMainWindow):
         self.theme_mode = self.prefs.value("theme", "system")
         self.current = "overview"
         self.state = {"user": "", "providers": [], "signals": [], "status": "connecting", "consents": None,
-                      "app_latest": None, "role": None}
+                      "app_latest": None, "app_changes": [], "role": None}
         self.update_offered: dict[str, float] = {}  # versión -> hasta cuándo no se vuelve a avisar («Later»)
         self.update_box = None  # el aviso de versión nueva, si está abierto
         self.key_offered = False  # el aviso de «clave no válida» ya salió en esta sesión
@@ -130,12 +131,13 @@ class MainWindow(QMainWindow):
                           signals=d.get("signals", []))
         if "trades" in d and self.demo is None:
             self.state["trades"] = d["trades"]
-        for k in ("consents", "app_latest", "role", "risk"):
+        for k in ("consents", "app_latest", "app_changes", "role", "risk"):
             if k in d:
                 self.state[k] = d[k]
         if self.screens and "admin" in self.nav_buttons:
             self.nav_buttons["admin"].setVisible(self.state.get("role") == "admin")
         if self.screens:
+            self.screens["settings"].changes = self.state["app_changes"]
             self.screens["settings"].set_account(d.get("consents"), d.get("app_latest"), d.get("role"))
             QTimer.singleShot(0, self._offer_update)  # fuera de la señal: el aviso es una ventana modal
         if self.screens and self.screens["providers"].has_unsaved():
@@ -225,7 +227,7 @@ class MainWindow(QMainWindow):
         self.screens = {
             "overview": OverviewScreen(), "providers": ProvidersScreen(), "trades": TradesScreen(),
             "stats": StatsScreen(),
-            "calls": CallsScreen(), "ibkr": IbkrScreen(), "telegram": TelegramScreen(),
+            "calls": CallsScreen(), "mycalls": MyCallsScreen(), "ibkr": IbkrScreen(), "telegram": TelegramScreen(),
             "settings": SettingsScreen(self.theme_mode),
         }
         if HAS_ADMIN:
@@ -247,6 +249,9 @@ class MainWindow(QMainWindow):
                                                           else None)
         self.screens["settings"].delete_requested.connect(self._delete_account)
         self.screens["settings"].new_key_requested.connect(self._new_key)
+        self.screens["settings"].pair_requested.connect(
+            lambda: self.client.request("pair_start", key=net.saved_key() or "") if self.client else
+            QMessageBox.warning(self, "Link my phone", "Not connected to the Signa server."))
         self.screens["settings"].update_ready.connect(self._quit)  # el instalador la vuelve a abrir
         self.screens["settings"].risk_save.connect(
             lambda f: self.client.request("save_risk", fields=f) if self.client else None)
@@ -255,6 +260,10 @@ class MainWindow(QMainWindow):
         self.screens["overview"].close_all_requested.connect(
             lambda: self.client.request("close_all") if self.client else None)
         self.screens["providers"].save.connect(self._save)
+        self.screens["mycalls"].quote_requested.connect(
+            lambda o: self.client.request("own_quote", **o) if self.client else
+            self.screens["mycalls"].set_quote(None, "Not connected to the Signa server."))
+        self.screens["mycalls"].buy_requested.connect(self._own_buy)
         self.screens["telegram"].bot_changed.connect(self._bot_changed)
         for w in self.screens.values():
             self.stack.addWidget(w)
@@ -329,9 +338,10 @@ class MainWindow(QMainWindow):
         box.setWindowTitle("Signa update")
         box.setIcon(QMessageBox.Information)
         box.setText(f"Signa v{latest} is available")
-        box.setInformativeText(f"You have v{__version__}. Installing takes about a minute: Signa closes and opens "
-                               "again on the new version. Your stops stay in IBKR."
-                               + ("\n\nThe US market is OPEN right now: you can install it later from Settings."
+        box.setInformativeText(whats_new(self.state.get("app_changes"), latest)
+                               + f"<p>You have v{__version__}. Installing takes about a minute: Signa closes and "
+                               "opens again on the new version. Your stops stay in IBKR.</p>"
+                               + ("<p>The US market is OPEN right now: you can install it later from Settings.</p>"
                                   if market_open() else ""))
         go = box.addButton("Install now", QMessageBox.AcceptRole)
         box.addButton("Later", QMessageBox.RejectRole)
@@ -396,6 +406,16 @@ class MainWindow(QMainWindow):
                     adm.show_invite(d["name"], d["code"], d.get("handle"))
                 adm.note("Saved")
                 self.client.request("admin_state")
+        elif d.get("type") == "pair_start":
+            self._show_pair(d)
+        elif d.get("type") == "own_quote":
+            if self.screens:
+                self.screens["mycalls"].set_quote(d.get("quote") if d.get("ok") else None, d.get("error") or "")
+        elif d.get("type") == "own_buy":
+            if self.screens:
+                self.screens["mycalls"].set_result(bool(d.get("ok")), d.get("note") or d.get("error") or "")
+            if d.get("ok") and self.client is not None:
+                self.client.sync_now()
         elif d.get("type") == "stats":
             self.screens["stats"].set_report(d.get("report") if d.get("ok") else None, d.get("error") or "")
         elif d.get("type") == "risk":
@@ -432,6 +452,21 @@ class MainWindow(QMainWindow):
                 return
             self._forget_everything()
 
+    def _show_pair(self, d: dict):
+        """Settings › Phone: el código que se escribe en el móvil (una vez, durante unos minutos)."""
+        if not d.get("ok"):
+            QMessageBox.warning(self, "Link my phone", d.get("error") or "Couldn't make a code.")
+            return
+        code = f"{d['code'][:4]} {d['code'][4:]}"
+        box = QMessageBox(self)
+        box.setWindowTitle("Link my phone")
+        box.setText(f"Your code:  {code}")
+        box.setInformativeText(f"Open Signa on your Android phone and type this code. It works once, for "
+                               f"{d.get('minutes', 10)} minutes. Don't share it: it gives access to your account.")
+        box.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        box.addButton(QMessageBox.Close)
+        box.exec()
+
     def _on_alert(self, d: dict):
         """Aviso de Signa (cuadre con IBKR, error de un motor, solicitud de acceso): a Overview y como notificación."""
         if self.screens:
@@ -461,7 +496,8 @@ class MainWindow(QMainWindow):
         t = next((x for x in self.state.get("trades", []) if x["order_ref"] == ref), None)
         if t is None:
             return
-        name = next((p["name"] for p in self.state["providers"] if p["id"] == t["provider_id"]), t["provider_id"])
+        name = next((p["name"] for p in self.state["providers"] if p["id"] == t["provider_id"]),
+                    "My calls" if t["provider_id"] == "mine" else t["provider_id"])
         self.drawer.open(t, name)
 
     def _trade_quote(self, ref: str):
@@ -538,6 +574,35 @@ class MainWindow(QMainWindow):
             self.client.request("trade_action", order_ref=ref, action="sell", value="all")
         else:
             tr.note("Not connected to the Signa server.", False)
+
+    def _own_buy(self, o: dict):
+        """My calls › Buy (a mercado, o una orden de compra a tu precio si trae `limit`): siempre se confirma; en Live,
+        avisando de que es dinero real."""
+        live, limit = o["account"] == "live", o.get("limit")
+        box = QMessageBox(self)
+        box.setWindowTitle("My calls")
+        box.setIcon(QMessageBox.Warning if live else QMessageBox.Question)
+        if limit:
+            box.setText(f"Buy order: {o['contracts']} {o['name']} at {limit:.2f}?")
+            cost = (f"Up to ${limit * 100 * o['contracts']:,.0f}. Limit order, valid today: if it doesn't fill, "
+                    "nothing is bought. ")
+        else:
+            box.setText(f"Buy {o['contracts']} {o['name']} at market?")
+            cost = f"About ${o['ask'] * 100 * o['contracts']:,.0f} at the ask {o['ask']:.2f}. " if o.get("ask") else ""
+        stop = f"Stop loss −{o['sl_pct']:g}%." if o.get("sl_pct") else "No stop loss."
+        box.setInformativeText(cost + stop + ("\n\nLIVE account: a real order with real money." if live
+                                              else "\n\nPaper account."))
+        yes = box.addButton("Buy", QMessageBox.AcceptRole)
+        box.addButton("Cancel", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not yes:
+            return
+        scr = self.screens["mycalls"]
+        if self.client is None:
+            scr.set_result(False, "Not connected to the Signa server.")
+            return
+        scr.sending()
+        self.client.request("own_buy", **{k: v for k, v in o.items() if k not in ("name", "ask")})
 
     def _after_action(self, ref: str):
         """Tras operar: su cronología y la lista se ponen al día (el servidor ya lo apuntó en el diario)."""

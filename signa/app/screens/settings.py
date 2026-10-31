@@ -7,6 +7,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QCheckBox, QDialog, QLineEdit, QMessageBox, QTextBrowser
 
 from ... import __version__
+from ...core import changelog
 from ...core.logs import HOME
 from .. import autostart, updater
 from .. import client as net
@@ -16,10 +17,22 @@ from .telegram import Job
 
 TERMS = {"data": "Data terms", "use": "Terms of use"}
 LOG_TAIL = 256 * 1024  # de cada log, lo último
+SHOW_VERSIONS = 5  # versiones con su lista de cambios en el aviso de actualización
 
 
 def version_tuple(v: str) -> tuple:
     return tuple(int(x) if x.isdigit() else 0 for x in (v or "0").split("."))
+
+
+def whats_new(changes: list[dict] | None, latest: str | None) -> str:
+    """«What's new» del aviso de actualización (HTML): lo de TODAS las versiones entre la tuya y la nueva (las
+    SHOW_VERSIONS más nuevas, para que el aviso no crezca sin fin). Sin notas, nada."""
+    got = changelog.between(changes, __version__, latest or "0")
+    if not got:
+        return ""
+    more = len(got) - SHOW_VERSIONS
+    return ("<p><b>What's new</b></p>" + changelog.as_html(got[:SHOW_VERSIONS])
+            + (f"<p>…and {more} earlier version{'s' if more > 1 else ''}.</p>" if more > 0 else ""))
 
 
 def logs_blob() -> bytes:
@@ -79,12 +92,14 @@ class SettingsScreen(Page):
     risk_save = Signal(dict)  # límites de riesgo -> servidor
     update_ready = Signal()  # el instalador ya está lanzado: la app debe cerrarse
     new_key_requested = Signal()  # «Use a new invite key»: la ventana olvida la clave y enseña Welcome
+    pair_requested = Signal()  # «Link my phone»: la ventana pide el código al servidor
 
     def __init__(self, theme_mode: str):
         super().__init__("Settings")
         self.prefs = QSettings("Signa", "Signa")
         self.consents: list[dict] = []
         self.latest: str | None = None
+        self.changes: list[dict] = []  # lo nuevo de cada versión publicada (lo pone la ventana)
         self.role = "user"
         self.jobs: list[Job] = []
 
@@ -114,7 +129,13 @@ class SettingsScreen(Page):
         self.risk_card = self._risk_card()
         left = vbox(section("General", general), section("Risk limits", self.risk_card),
                     section("Updates", self.updates), spacing=18)
-        right = widget(vbox(section("Data and privacy", self.privacy), section("Diagnostics", diag), spacing=18))
+        phone = Card()
+        link = button("Link my phone")
+        link.clicked.connect(self.pair_requested)
+        phone.add_row("Signa for Android", "See your trades, calls and stats on your phone and trade from it. Your "
+                      "IBKR and Telegram bots keep running on this computer.", link)
+        right = widget(vbox(section("Data and privacy", self.privacy), section("Phone", phone),
+                            section("Diagnostics", diag), spacing=18))
         right.setFixedWidth(430)
         self.add(columns(widget(left), right))
         self.finish()
@@ -206,9 +227,10 @@ class SettingsScreen(Page):
         box = QMessageBox(self)
         box.setWindowTitle("Update Signa")
         box.setText(f"Install Signa v{self.latest} now?")
-        box.setInformativeText("Signa stops for about a minute: no new trades in that time (your stops and take "
-                               "profits stay in IBKR)." + ("\n\nThe US market is OPEN right now." if market_open()
-                                                           else ""))
+        box.setInformativeText(whats_new(self.changes, self.latest)
+                               + "<p>Signa stops for about a minute: no new trades in that time (your stops and "
+                               "take profits stay in IBKR).</p>"
+                               + ("<p>The US market is OPEN right now.</p>" if market_open() else ""))
         yes = box.addButton("Install", QMessageBox.AcceptRole)
         box.addButton("Later", QMessageBox.RejectRole)
         box.exec()

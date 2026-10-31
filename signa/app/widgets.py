@@ -16,6 +16,7 @@ ICONS = {
                  'M3 3a7 7 0 0 0 0 10M13 3a7 7 0 0 1 0 10"/>',
     "trades": '<path d="M2.5 12.5l3.5-4 3 2.5 4.5-6"/><path d="M10.5 5h3v3"/>',
     "calls": '<path d="M3 3.5h10v7H7l-3 2.5v-2.5H3z"/>',
+    "mycalls": '<path d="M3 3.5h10v7H7l-3 2.5v-2.5H3z"/><path d="M8 5.2v3.6M6.2 7h3.6"/>',
     "ibkr": '<path d="M6 2.5v3M10 2.5v3M4.5 5.5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11.5v2"/>',
     "telegram": '<path d="M14 2.5L1.5 7.5l4.5 1.5 1.5 4.5 2-3 3.5 2.5z"/>',
     "settings": '<path d="M2.5 4.5h7M12.5 4.5h1M2.5 11.5h1M6.5 11.5h7"/><circle cx="11" cy="4.5" r="1.5"/>'

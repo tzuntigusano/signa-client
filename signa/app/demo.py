@@ -180,4 +180,11 @@ def demo_action(q: dict, action: str, value) -> str:
         if v.get("limit"):
             return f"⏳ Buy order {n} at {v['limit']:.2f} (valid today) · demo: nothing was sent"
         return f"✅ Bought {n} at {q.get('ask') or 0:.2f} · demo: nothing was sent"
+    if action == "under":
+        sym, op = q.get("symbol") or "SPY", "<=" if (q.get("right") or "C") == "P" else ">="
+        q.update(under={"symbol": sym, "level": v["level"], "op": op, "live": True, "error": ""}, reason="manual")
+        return f"🎯 Sells all at market when {sym} {op} {v['level']:g} · demo: nothing was sent"
+    if action == "under_remove":
+        q.update(under=None, reason="manual")
+        return "Sell at underlying price removed · demo: nothing was sent"
     return "demo"

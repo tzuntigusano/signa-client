@@ -33,7 +33,7 @@ class StatsScreen(Page):
         self.seg = Segmented([("7d", "Last 7 days"), ("30d", "Last 30 days"), ("all", "All")], "30d")
         super().__init__("Stats", right=self.seg)
         self.period = "30d"
-        self.names: dict[str, str] = {}
+        self.names: dict[str, str] = {"mine": "My calls"}
         self.report: dict | None = None
         self.seg.changed.connect(self._set_period)
         self.host = QWidget()
@@ -43,7 +43,7 @@ class StatsScreen(Page):
         self.paint()
 
     def set_providers(self, providers: list[dict]):
-        self.names = {p["id"]: p["name"] for p in providers}
+        self.names = {"mine": "My calls", **{p["id"]: p["name"] for p in providers}}
         self.paint()
 
     def showEvent(self, e):  # al entrar en la pantalla, números frescos

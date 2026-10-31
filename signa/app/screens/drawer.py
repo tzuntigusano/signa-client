@@ -134,7 +134,8 @@ class TradeDrawer(QWidget):
         first = self.quote is None
         old = self.quote
         self.quote = quote or self.quote
-        same_shape = old and quote and all(old.get(k) == quote.get(k) for k in ("status", "held", "sl", "tp1", "tp2"))
+        same_shape = old and quote and all(old.get(k) == quote.get(k)
+                                           for k in ("status", "held", "sl", "tp1", "tp2", "under"))
         if first or not same_shape:
             self.paint()  # cambió la posición: se rehace todo
         else:
@@ -192,6 +193,7 @@ class TradeDrawer(QWidget):
             lay.addWidget(self._sell_card(q.get("held") or t.get("held") or 0))
             lay.addWidget(self._level_card("stop", q))
             lay.addWidget(self._level_card("tp", q))
+            lay.addWidget(self._under_card(q))
             lay.addWidget(self._buy_card("Buy more"))
         else:
             lay.addWidget(self._buy_card("Buy now"))
@@ -378,6 +380,41 @@ class TradeDrawer(QWidget):
         now = f" · now {has:.2f}" if has else " · none"
         return self._card(("Stop loss" if kind == "stop" else "Take profit") + now,
                           widget(vbox(opts, hbox(custom, set_btn, spacing=8), hint, spacing=10)), remove)
+
+    def _under_card(self, q: dict) -> QFrame:
+        """VENDER AL PRECIO DEL SUBYACENTE: todo a mercado cuando SPY (o el índice) cruce tu nivel. En una put, al
+        bajar a él; en una call, al subir. Es una orden de IBKR (salta aunque el PC esté apagado)."""
+        parts = (self.trade.get("contract") or "").split()  # «SPY 769P 20261027»
+        sym = q.get("symbol") or (parts[0] if parts else "SPY")
+        put = (q.get("right") or (parts[1][-1:] if len(parts) > 1 else "C")).upper() == "P"
+        u = q.get("under")
+        level = QLineEdit()
+        level.setPlaceholderText(f"{sym} price e.g. {'745' if put else '775'}")
+        set_btn = button("Set", "primary")
+        set_btn.setFixedWidth(64)
+        hint = label(f"Sells all you hold at market when {sym} {'falls to' if put else 'rises to'} that price. It's "
+                     "an IBKR order: it works even with your PC off.", "small", wrap=True)
+
+        def submit():
+            v = parse_price(level.text())
+            if v is None:
+                hint.setText(f"Type the {sym} price (e.g. {'745' if put else '775'})")
+                return
+            self._send("under", {"level": v})
+        set_btn.clicked.connect(submit)
+        level.returnPressed.connect(submit)
+        remove, now = None, " · none"
+        if u:
+            now = f" · {u['symbol']} {'≤' if u['op'] == '<=' else '≥'} {u['level']:g}"
+            remove = button("Remove", "quiet")
+            remove.setToolTip(f"Remove the sell at {sym} price")
+            remove.clicked.connect(lambda: self._send("under_remove"))
+            if u.get("error"):
+                hint.setText(f"✕  IBKR rejected it: {u['error']}")
+            elif not u.get("live"):
+                hint.setText("Not in IBKR right now: Signa puts it back in a moment.")
+        return self._card(f"Sell at {sym} price" + now, widget(vbox(hbox(level, set_btn, spacing=8), hint,
+                                                                    spacing=10)), remove)
 
     def _buy_card(self, verb: str) -> QFrame:
         mode = {"v": "contracts"}

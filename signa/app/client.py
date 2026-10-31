@@ -15,7 +15,7 @@ from signa.core.appkey import forget_key, saved_key, store_key  # noqa: F401 (la
 
 RETRY = (2, 5, 10, 30)
 REPLIES = ("export", "delete_account", "trade_detail", "trade_quote", "trade_action", "risk",  # -> reply
-           "close_all", "stats")
+           "close_all", "stats", "pair_start", "pc_status", "own_quote", "own_buy", "trade_quotes")
 
 
 def is_reply(kind) -> bool:

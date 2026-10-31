@@ -29,6 +29,8 @@ from broker import Broker, Plan, PlanError  # noqa: E402
 from calls import Call, Leg  # noqa: E402
 from telegram_ui import Telegram  # noqa: E402
 
+from signa.executor.under import Under  # noqa: E402
+
 _log = Log("executor")
 LOCK_PORT = 47691
 RETRY = (2, 5, 10, 30)
@@ -100,6 +102,7 @@ class Executor:
     def __init__(self, cfg: dict, key: str):
         self.cfg, self.key = cfg, key
         self.brokers: dict[str, Broker] = {}
+        self.unders: dict[str, Under] = {}  # cuenta -> sus órdenes «vender al precio del subyacente» (under.py)
         self.bots: dict[str, Telegram] = {}
         self.bot_tasks: dict[str, asyncio.Future] = {}
         self.test_cards: dict[int, dict] = {}  # message_id -> estado de la tarjeta de prueba (core.test_card)
@@ -114,6 +117,7 @@ class Executor:
         if account not in self.brokers:
             c = self.cfg[account]
             self.brokers[account] = Broker("127.0.0.1", int(c["port"]), int(c["client_id"]), live=account == "live")
+            self.unders[account] = Under(account, self.brokers[account], log)
         return self.brokers[account]
 
     async def rpc(self, method: str, a: dict):
@@ -147,8 +151,15 @@ class Executor:
             bid, ask = await b.quote(plan)
             return {"bid": bid, "ask": ask, "info": wire._plain(plan.info)}
         cb = self._callback(a.get("cb"))
+        under = self.unders[a.get("account", "paper")]
         if method == "execute":
+            if plan.action == "SELL" and plan.contract is not None:  # vende el motor: fuera la del subyacente
+                await under.before_sell(plan.contract.conId)
             return await b.execute(plan, a.get("limit"), on_fill=cb)
+        if method == "under_set":  # Trades › Trade › vender al precio del subyacente
+            return await under.set(plan, a["symbol"], a["level"], a["op"])
+        if method == "under_remove":
+            return await under.remove(plan)
         if method == "set_stop":
             return await b.set_stop(plan, a["stop"], a.get("stop_limit", False), on_fill=cb)
         if method == "set_tp":
@@ -197,8 +208,15 @@ class Executor:
                 if items:
                     await self.ws.send_json({"type": "ticks", "account": account, "items": items})
                 if n % 2 == 0 and b.ib.isConnected():
+                    under = self.unders.get(account)
+                    if under is not None:
+                        try:
+                            await under.keep()
+                        except Exception as e:  # que un fallo aquí no pare los precios ni la foto de órdenes
+                            log(f"under {account}: {type(e).__name__}: {e}")
                     st = account_status(self.cfg[account], b, True)
                     await self.ws.send_json({"type": "orders", "account": account, "items": protections(b),
+                                             "under": under.snapshot() if under is not None else {},
                                              "positions": positions(b), "net_liq": st.get("net_liq")})
 
     # --- Telegram -----------------------------------------------------------------------------------

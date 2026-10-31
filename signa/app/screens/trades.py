@@ -107,7 +107,7 @@ class TradesScreen(Page):
     def __init__(self):
         super().__init__("Trades")
         self.trades: list[dict] = []
-        self.names: dict[str, str] = {}
+        self.names: dict[str, str] = {"mine": "My calls"}
         self.expanded: set[str] = set()
         self._last = None  # lo último pintado: si llega igual, no se rehace
         self.details: dict[str, list | str | None] = {}  # None = cargando; str = error
@@ -147,7 +147,7 @@ class TradesScreen(Page):
                 if t["order_ref"] in self.expanded and t["status"] == "open":
                     self.detail_requested.emit(t["order_ref"])  # sin vaciarla: nada de «Loading…» entretanto
         if providers is not None:
-            self.names = {p["id"]: p["name"] for p in providers}
+            self.names = {"mine": "My calls", **{p["id"]: p["name"] for p in providers}}
         self.refresh()
 
     def _set_period(self, key: str):

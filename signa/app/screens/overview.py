@@ -71,7 +71,7 @@ class OverviewScreen(Page):
             if w:
                 w.hide()
                 w.deleteLater()
-        names = {p["id"]: p["name"] for p in self.providers}
+        names = {"mine": "My calls", **{p["id"]: p["name"] for p in self.providers}}
         today = [s for s in self.signals if is_today(s.get("ts"))]
         entries = [s for s in today if s["kind"] == "entry"]
         alerts = [s for s in today if s["kind"] in ALERTS]
