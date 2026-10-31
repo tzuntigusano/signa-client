@@ -24,7 +24,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14          # arm64
+          - os: macos-15          # arm64 (macos-14 se retira el 2/11/2026)
             min_os: "14.0"        # PySide6 6.12
           # x86_64: también los iMac Intel que se quedaron en macOS 12 Monterey (29/10: la 0.1.10 se abría y se
           # cerraba sola, Qt 6.12 pide 14). Python de python.org (10.13+, con su OpenSSL: el de setup-python trae uno
