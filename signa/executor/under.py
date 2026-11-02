@@ -1,7 +1,8 @@
 """VENDER AL PRECIO DEL SUBYACENTE (Trades › Trade › «Sell at SPY price»): una orden CONDICIONADA de IBKR que vende tu
-opción A MERCADO cuando el subyacente (SPY, QQQ, el índice SPX…) cruza el nivel que pones: en una put, al BAJAR a
-él; en una call, al SUBIR. Vive en IBKR (salta aunque el PC esté apagado) y va en el MISMO grupo OCA que tu SL: si
-salta una, la otra se reduce en lo vendido (nunca se vende más de lo que tienes).
+opción A MERCADO cuando el subyacente (SPY, QQQ, el índice SPX…) cruza el nivel que pones. DOS por operación: la de
+TP (put: al BAJAR a él; call: al SUBIR) y la de SL (al revés: put al SUBIR, call al BAJAR). Viven en IBKR (saltan
+aunque el PC esté apagado) y van en el MISMO grupo OCA que tu SL: si salta una, las otras se reducen en lo vendido
+(nunca se vende más de lo que tienes).
 
 Es de Signa, no del copiador (el broker.py copiado no se toca): lleva su propio orderRef y el ejecutor la VIGILA,
 porque IBKR cancela a veces la otra pata del grupo OCA cuando se sustituye el SL (el broker solo repone su SL/TP):
@@ -19,6 +20,7 @@ from ib_async import Index, MarketOrder, PriceCondition, Stock
 from signa.core.logs import HOME
 
 REF = "signa-under"
+REFS = {"tp": REF, "sl": "signa-under-sl"}  # (la de TP conserva el orderRef de siempre: las ya puestas siguen)
 TARGETS = HOME / "under_targets.json"
 INDICES = ("SPX", "XSP", "NDX", "RUT", "VIX")
 DONE = {"Filled", "Cancelled", "ApiCancelled", "Inactive"}
@@ -37,8 +39,8 @@ class Under:
     def __init__(self, account: str, broker, log=print):
         self.account, self.b, self.log = account, broker, log
         self.paused: dict[int, float] = {}  # conId -> hasta cuándo no se toca (tras una venta del motor)
-        self.fails: dict[int, int] = {}
-        self.errors: dict[int, str] = {}  # conId -> el último rechazo de IBKR (lo ve la app)
+        self.fails: dict[tuple, int] = {}  # (conId, «tp»|«sl») -> rechazos seguidos al reponerla
+        self.errors: dict[tuple, str] = {}  # (conId, «tp»|«sl») -> el último rechazo de IBKR (lo ve la app)
         self.cons: dict[str, object] = {}  # símbolo -> contrato del subyacente (cualificado)
 
     # --- lo que quieres (persistido) ------------------------------------------------------------------
@@ -48,23 +50,37 @@ class Under:
         except (OSError, ValueError):
             return {}
 
-    def wanted(self) -> dict[int, dict]:
-        return {int(k): v for k, v in (self._all().get(self.account) or {}).items()}
+    def wanted(self) -> dict[int, dict[str, dict]]:
+        """{conId: {"tp": want, "sl": want}} (lo guardado por la 0.1.18-0.1.19, una sola y plana, es la de TP)."""
+        out = {}
+        for k, v in (self._all().get(self.account) or {}).items():
+            kinds = {"tp": v} if "symbol" in v else {kd: w for kd, w in v.items() if kd in REFS and w}
+            if kinds:
+                out[int(k)] = kinds
+        return out
 
-    def _save(self, con_id: int, want: dict | None):
+    def _save(self, con_id: int, kind: str, want: dict | None):
         data = self._all()
         mine = data.setdefault(self.account, {})
+        cur = mine.get(str(con_id)) or {}
+        cur = {"tp": cur} if "symbol" in cur else dict(cur)
         if want is None:
-            mine.pop(str(con_id), None)
+            cur.pop(kind, None)
         else:
-            mine[str(con_id)] = want
+            cur[kind] = want
+        if cur:
+            mine[str(con_id)] = cur
+        else:
+            mine.pop(str(con_id), None)
         TARGETS.parent.mkdir(parents=True, exist_ok=True)
         TARGETS.write_text(json.dumps(data, indent=1), encoding="utf-8")
 
     # --- IBKR ---------------------------------------------------------------------------------------
-    def live(self, con_id: int) -> list:
+    def live(self, con_id: int, kind: str | None = None) -> list:
+        """Las vivas de ese contrato: de un tipo («tp» | «sl») o de los dos."""
+        refs = {REFS[kind]} if kind else set(REFS.values())
         return [t for t in self.b.ib.openTrades() if t.contract.conId == con_id and t.order.action == "SELL"
-                and t.order.orderRef == REF and t.orderStatus.status not in DONE]
+                and t.order.orderRef in refs and t.orderStatus.status not in DONE]
 
     def held(self, con_id: int) -> int:
         return int(sum(p.position for p in self.b.ib.positions() if p.contract.conId == con_id))
@@ -91,11 +107,11 @@ class Under:
                 return
             await asyncio.sleep(0.05)
 
-    async def _place(self, contract, want: dict, qty: int) -> str:
+    async def _place(self, contract, want: dict, qty: int, kind: str = "tp") -> str:
         """La orden: VENTA a mercado de `qty` cuando el subyacente cruce el nivel, en el grupo OCA del SL."""
         under = await self._under_con(want["symbol"])
         more = want["op"] == ">="
-        order = MarketOrder("SELL", qty, tif=want.get("tif", "DAY"), orderRef=REF)
+        order = MarketOrder("SELL", qty, tif=want.get("tif", "DAY"), orderRef=REFS[kind])
         order.conditions = [PriceCondition(isMore=more, price=float(want["level"]), conId=under.conId,
                                            exch=under.exchange or "SMART", triggerMethod=2)]  # 2 = último precio
         order.conditionsIgnoreRth = False  # solo en sesión regular
@@ -119,31 +135,36 @@ class Under:
         what = f"#{tr.order.orderId} SELL {qty} at market when {want['symbol']} {want['op']} {want['level']:g}"
         if tr.orderStatus.status in DONE:
             return f"❌ {what} → {tr.orderStatus.status}: {errs[-1] if errs else ''}"
-        return f"🎯 {what} placed"
+        return ("🎯 " if kind == "tp" else "🛡 ") + f"{what} placed"
 
     # --- lo que pide el motor ---------------------------------------------------------------------------
-    async def set(self, plan, symbol: str, level: float, op: str) -> str:
-        """Poner (o cambiar) la de ese contrato, para todo lo que tienes."""
+    async def set(self, plan, symbol: str, level: float, op: str, kind: str = "tp") -> str:
+        """Poner (o cambiar) la de ese tipo («tp» | «sl») en ese contrato, para todo lo que tienes."""
+        if kind not in REFS:
+            raise ValueError(f"unknown kind {kind!r}")
         async with self.b._olock(plan):
             await self.b.ensure()
             con = plan.contract
             qty = min(int(plan.qty), self.held(con.conId)) or int(plan.qty)
             want = {"symbol": symbol.upper(), "level": float(level), "op": op, "tif": self.b._tif(plan)}
-            await self._cancel(self.live(con.conId))
-            res = await self._place(con, want, qty)
+            await self._cancel(self.live(con.conId, kind))
+            res = await self._place(con, want, qty, kind)
             if res.startswith("❌"):
                 return res
-            self._save(con.conId, {**want, "qty": qty, "con": _contract_dict(con)})
-            self.fails.pop(con.conId, None)
-            self.errors.pop(con.conId, None)
+            self._save(con.conId, kind, {**want, "qty": qty, "con": _contract_dict(con)})
+            self.fails.pop((con.conId, kind), None)
+            self.errors.pop((con.conId, kind), None)
             return res
 
-    async def remove(self, plan) -> str:
+    async def remove(self, plan, kind: str | None = None) -> str:
+        """Quitar la de ese tipo, o las dos (kind None: lo que pedía el servidor de antes)."""
         async with self.b._olock(plan):
             await self.b.ensure()
-            n = len(self.live(plan.contract.conId))
-            await self._cancel(self.live(plan.contract.conId))
-            self._save(plan.contract.conId, None)
+            cid = plan.contract.conId
+            n = len(self.live(cid, kind))
+            await self._cancel(self.live(cid, kind))
+            for kd in ([kind] if kind else list(REFS)):
+                self._save(cid, kd, None)
             return f"🗑 sell at underlying price removed ({n} order{'s' if n != 1 else ''} cancelled)" if n \
                 else "ℹ️ no sell-at-underlying-price order on that contract: nothing to remove"
 
@@ -154,42 +175,47 @@ class Under:
         await self._cancel(self.live(con_id))
 
     def snapshot(self) -> dict[str, dict]:
-        """{conId: {symbol, level, op, live, error}} para la foto de órdenes que el ejecutor manda al servidor."""
-        return {str(cid): {"symbol": w["symbol"], "level": w["level"], "op": w["op"],
-                           "live": bool(self.live(cid)), "error": self.errors.get(cid, "")}
-                for cid, w in self.wanted().items()}
+        """{conId: {"tp": {symbol, level, op, live, error}, "sl": {…}}} para la foto de órdenes que el ejecutor
+        manda al servidor (el servidor entiende también la plana de la 0.1.18-0.1.19)."""
+        return {str(cid): {kd: {"symbol": w["symbol"], "level": w["level"], "op": w["op"],
+                                "live": bool(self.live(cid, kd)), "error": self.errors.get((cid, kd), "")}
+                           for kd, w in kinds.items()}
+                for cid, kinds in self.wanted().items()}
 
     async def keep(self):
         """Cada pocos segundos: que lo que quieres siga en IBKR, con la cantidad que tienes y en el grupo del SL."""
         if not self.b.ib.isConnected():
             return
-        for cid, want in self.wanted().items():
+        for cid, kinds in self.wanted().items():
             if time.monotonic() < self.paused.get(cid, 0):
                 continue
-            have = min(self.held(cid), int(want.get("qty") or 0) or self.held(cid))  # lo de ESTA operación
-            live = self.live(cid)
-            if have <= 0:  # ya no la tienes (SL, venta, la propia orden…): fuera, que no te deje en corto
+            for kd, want in kinds.items():
+                key = (cid, kd)
+                have = min(self.held(cid), int(want.get("qty") or 0) or self.held(cid))  # lo de ESTA operación
+                live = self.live(cid, kd)
+                if have <= 0:  # ya no la tienes (SL, venta, la propia orden…): fuera, que no te deje en corto
+                    await self._cancel(live)
+                    self._save(cid, kd, None)
+                    self.errors.pop(key, None)
+                    continue
+                con = _contract(want.get("con") or {})
+                if con is None:
+                    continue
+                group = self._oca(con)
+                ok = (len(live) == 1 and int(live[0].order.totalQuantity) == have
+                      and (group is None or live[0].order.ocaGroup == group))
+                if ok or self.fails.get(key, 0) >= MAX_FAILS:
+                    continue
                 await self._cancel(live)
-                self._save(cid, None)
-                self.errors.pop(cid, None)
-                continue
-            con = _contract(want.get("con") or {})
-            if con is None:
-                continue
-            group = self._oca(con)
-            ok = (len(live) == 1 and int(live[0].order.totalQuantity) == have
-                  and (group is None or live[0].order.ocaGroup == group))
-            if ok or self.fails.get(cid, 0) >= MAX_FAILS:
-                continue
-            await self._cancel(live)
-            res = await self._place(con, want, have)
-            self.log(f"under {self.account} {want['symbol']} {want['op']} {want['level']:g}: re-placed: {res}")
-            if res.startswith("❌"):
-                self.fails[cid] = self.fails.get(cid, 0) + 1
-                self.errors[cid] = res
-            else:
-                self.fails.pop(cid, None)
-                self.errors.pop(cid, None)
+                res = await self._place(con, want, have, kd)
+                self.log(f"under {self.account} {kd} {want['symbol']} {want['op']} {want['level']:g}: "
+                         f"re-placed: {res}")
+                if res.startswith("❌"):
+                    self.fails[key] = self.fails.get(key, 0) + 1
+                    self.errors[key] = res
+                else:
+                    self.fails.pop(key, None)
+                    self.errors.pop(key, None)
 
 
 def _contract_dict(con) -> dict:

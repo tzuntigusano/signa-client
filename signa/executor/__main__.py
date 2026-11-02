@@ -158,9 +158,9 @@ class Executor:
                 await under.before_sell(plan.contract.conId)
             return await b.execute(plan, a.get("limit"), on_fill=cb)
         if method == "under_set":  # Trades › Trade › vender al precio del subyacente
-            return await under.set(plan, a["symbol"], a["level"], a["op"])
+            return await under.set(plan, a["symbol"], a["level"], a["op"], a.get("kind", "tp"))
         if method == "under_remove":
-            return await under.remove(plan)
+            return await under.remove(plan, a.get("kind"))
         if method == "set_stop":
             return await b.set_stop(plan, a["stop"], a.get("stop_limit", False), on_fill=cb)
         if method == "set_tp":

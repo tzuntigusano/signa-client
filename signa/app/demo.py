@@ -181,10 +181,15 @@ def demo_action(q: dict, action: str, value) -> str:
             return f"⏳ Buy order {n} at {v['limit']:.2f} (valid today) · demo: nothing was sent"
         return f"✅ Bought {n} at {q.get('ask') or 0:.2f} · demo: nothing was sent"
     if action == "under":
-        sym, op = q.get("symbol") or "SPY", "<=" if (q.get("right") or "C") == "P" else ">="
-        q.update(under={"symbol": sym, "level": v["level"], "op": op, "live": True, "error": ""}, reason="manual")
-        return f"🎯 Sells all at market when {sym} {op} {v['level']:g} · demo: nothing was sent"
+        kind = "sl" if v.get("kind") == "sl" else "tp"
+        falls = ((q.get("right") or "C") == "P") == (kind == "tp")
+        sym, op = q.get("symbol") or "SPY", "<=" if falls else ">="
+        q.update({"under" if kind == "tp" else "under_sl": {"symbol": sym, "level": v["level"], "op": op,
+                                                             "live": True, "error": ""}}, reason="manual")
+        return (f"{'🎯 Take profit' if kind == 'tp' else '🛡 Stop loss'}: sells all at market when {sym} {op} "
+                f"{v['level']:g} · demo: nothing was sent")
     if action == "under_remove":
-        q.update(under=None, reason="manual")
-        return "Sell at underlying price removed · demo: nothing was sent"
+        kind = "sl" if (v or {}).get("kind") == "sl" else "tp"
+        q.update({"under" if kind == "tp" else "under_sl": None}, reason="manual")
+        return f"{'Take profit' if kind == 'tp' else 'Stop loss'} at underlying price removed · demo: nothing was sent"
     return "demo"
