@@ -29,6 +29,7 @@ from broker import Broker, Plan, PlanError  # noqa: E402
 from calls import Call, Leg  # noqa: E402
 from telegram_ui import Telegram  # noqa: E402
 
+from signa.executor import keepalive  # noqa: E402
 from signa.executor.under import Under  # noqa: E402
 
 _log = Log("executor")
@@ -340,6 +341,8 @@ class Executor:
 
     async def run(self):
         asyncio.ensure_future(self.status_loop())
+        asyncio.ensure_future(keepalive.watchdog(self, log))  # conexión con IBKR muerta sin cerrarse -> reconectar
+        asyncio.ensure_future(keepalive.Awake(log).run())  # Mac: no dormirse en horario de mercado
         asyncio.ensure_future(self.watch_bots())
         asyncio.ensure_future(self.ticks())
         attempt, rejected = 0, False
