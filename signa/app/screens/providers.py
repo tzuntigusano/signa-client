@@ -44,7 +44,7 @@ def snapshot(p: dict) -> dict:
     """Los ajustes que se guardan, normalizados para poder comparar (2 == 2.0, «09:30:00» == «09:30»)."""
     out = {}
     for k in SAVED_FIELDS:
-        v = p.get(k)
+        v = None if k == "contracts" and p.get("contracts_default") else p.get(k)  # vacío = el del proveedor
         if k in ("contracts", "amount", "pct", "stop_pct", "chase_pct") and v is not None:
             v = float(v)
         elif k in ("hours_from", "hours_to") and v:
@@ -56,8 +56,8 @@ def snapshot(p: dict) -> dict:
 def size_text(p: dict) -> str:
     v = p.get(SIZE_LABEL[p["size_by"]][1])
     if p["size_by"] == "contracts":
-        n = int(v or 1)
-        return f"{n} contract{'s' if n != 1 else ''}"
+        n = int(v or (p.get("defaults") or {}).get("contracts") or 1)
+        return f"{n} contract{'s' if n != 1 else ''}" + (" (default)" if p.get("contracts_default") else "")
     return f"${_fmt(v)} per trade" if p["size_by"] == "amount" else f"{_fmt(v)}% per trade"
 
 
@@ -209,12 +209,13 @@ class ProvidersScreen(Page):
         # vacíos = lo del proveedor (su motor); lo que escribas manda sobre eso
         d = p.get("defaults") or {}
         self.stop_field = _field(f"{_fmt(p['stop_pct'])} %" if p.get("stop_pct") else "")
-        self.stop_field.setPlaceholderText(f"{_fmt(d['sl'])} % (provider)" if d.get("sl") else "Provider's")
+        self.stop_field.setPlaceholderText(f"Default ({_fmt(d['sl'])} %)" if d.get("sl") else "Default")
         self.chase_field = _field(f"{_fmt(p['chase_pct'])} %" if p.get("chase_pct") is not None else "")
-        self.chase_field.setPlaceholderText(f"{_fmt(d['chase'])} % (provider)" if d.get("chase") is not None
-                                            else "Provider's rule")
-        card.add_row("Initial stop", "Below your entry · empty = the provider's", self.stop_field)
-        card.add_row("Max chase", "Skip if the ask is this much higher · empty = the provider's", self.chase_field)
+        self.chase_field.setPlaceholderText(f"Default ({_fmt(d['chase'])} %)" if d.get("chase") is not None
+                                            else "Default (his rule)")
+        card.add_row("Initial stop", "Below your entry · empty = the provider's strategy", self.stop_field)
+        card.add_row("Max chase", "Skip if the ask is this much higher · empty = the provider's strategy",
+                     self.chase_field)
         self.from_field = _field(str(p["hours_from"])[:5], 64)
         self.to_field = _field(str(p["hours_to"])[:5], 64)
         card.add_row("Trading hours (ET)", None,
@@ -255,7 +256,10 @@ class ProvidersScreen(Page):
         p = self.prov
         size = _num(self.size_field.text())
         field = SIZE_LABEL[p["size_by"]][1]
-        p[field] = int(size) if field == "contracts" and size else size
+        if field == "contracts":  # vacío = los del proveedor («Default (3)»)
+            p["contracts"], p["contracts_default"] = (int(size), False) if size else (None, True)
+        else:
+            p[field] = size
         p["stop_pct"] = _num(self.stop_field.text())
         p["chase_pct"] = _num(self.chase_field.text())
         p["hours_from"], p["hours_to"] = self.from_field.text().strip(), self.to_field.text().strip()
@@ -307,7 +311,13 @@ class ProvidersScreen(Page):
         title, field, unit = SIZE_LABEL[self.prov["size_by"]]
         value = self.prov.get(field)
         self.size_row.title.setText(title)
-        v = _fmt(value) or ("1" if field == "contracts" else "")
+        if field == "contracts":  # sin número suyo: «Default (3)», lo de la estrategia del proveedor
+            n = (self.prov.get("defaults") or {}).get("contracts") or 1
+            self.size_field.setPlaceholderText(f"Default ({n})")
+            self.size_field.setText("" if self.prov.get("contracts_default") or value is None else _fmt(value))
+            return
+        self.size_field.setPlaceholderText("")
+        v = _fmt(value)
         self.size_field.setText(f"${v}" if unit == "$" and v else f"{v} %" if unit == "%" and v else v)
 
     def _discard(self):
