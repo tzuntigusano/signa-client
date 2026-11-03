@@ -129,7 +129,7 @@ def stop_gateway(account: str) -> str:
 def restart_gateway(account: str) -> str:
     """El de Signa: RESTART de IBC (sin volver a pedir login ni IB Key). Uno de fuera o sin control: cerrarlo y
     arrancarlo desde Signa. BLOQUEA hasta un minuto: la app lo llama en un hilo."""
-    st = gateway.status(account)
+    st = gateway.status(account, control=True)
     if st["managed"] == "signa" and st["control"]:
         gateway.send_command(account, "RESTART")
         return "restart"

@@ -38,6 +38,7 @@ ACCOUNTS = {"paper": {"api": 4002, "cmd": 7462, "lock": 47692},
             "live": {"api": 4001, "cmd": 7463, "lock": 47693}}
 E_2FA_TIMEOUT, E_LOGIN_TIMEOUT = 1111, 1112  # códigos de salida de IBC (StartIBC.bat)
 SECRET_KEYS = ("IbLoginId", "IbPassword", "FIXLoginId", "FIXPassword")
+RESTART_NY = (18, 0)  # reinicio diario obligatorio del Gateway: a esta hora de NY, con el mercado ya cerrado
 
 
 class GatewayError(Exception):
@@ -141,7 +142,18 @@ def _ini(text: str) -> list[tuple[str, str | None]]:
     return out
 
 
-def config_text(account: str, base: str, creds: tuple[str, str] | None = None) -> str:
+def restart_time(now=None) -> str:
+    """El Gateway se reinicia solo una vez al día y, si no se le dice nada, a la hora del último RESTART (el
+    botón de Signa): así acaba reiniciándose en plena sesión. IBC lo fija en hora LOCAL y formato «06:00 PM»."""
+    from datetime import datetime
+
+    from ..core.market import NY
+    now = now or datetime.now().astimezone()  # hora local de este PC
+    ny = now.astimezone(NY).replace(hour=RESTART_NY[0], minute=RESTART_NY[1], second=0, microsecond=0)
+    return ny.astimezone(now.tzinfo).strftime("%I:%M %p")
+
+
+def config_text(account: str, base: str, creds: tuple[str, str] | None = None, now=None) -> str:
     """config.ini para IBC a partir de `base` (el de la instalación anterior o la plantilla de IBC). Fija modo,
     puerto de la API y el servidor de comandos solo en local. Credenciales SOLO si se pasan `creds`: el supervisor
     las pone justo antes de arrancar y las quita en cuanto el Gateway ha entrado (nunca en la línea de comandos,
@@ -152,7 +164,7 @@ def config_text(account: str, base: str, creds: tuple[str, str] | None = None) -
         secrets_.update(IbLoginId=creds[0], IbPassword=creds[1])
     force = {"TradingMode": account, "OverrideTwsApiPort": str(port["api"]), "CommandServerPort": str(port["cmd"]),
              "BindAddress": "127.0.0.1", "ControlFrom": "", "ReloginAfterSecondFactorAuthenticationTimeout": "yes",
-             **secrets_}
+             "AutoRestartTime": restart_time(now), **secrets_}
     seen, lines = set(), []
     for key, val in _ini(base):
         if val is None:
@@ -294,12 +306,15 @@ def supervisor_running(account: str) -> bool:
     return is_running(ACCOUNTS[account]["lock"])
 
 
-def status(account: str) -> dict:
+def status(account: str, control: bool = False) -> dict:
+    """`control` (¿responde su servidor de comandos?) solo cuando se va a usar: cada sondeo deja dos líneas en el
+    log de Java del Gateway y la pantalla IBKR lo pedía cada pocos segundos (9 MB de ruido que tapaban lo útil)."""
     procs = processes(account)
     signa = supervisor_running(account)
     return {"api": port_open(ACCOUNTS[account]["api"]), "running": bool(procs) or signa,
             "managed": "signa" if signa else ("external" if procs else None),
-            "control": port_open(ACCOUNTS[account]["cmd"]), "credentials": _has_credentials(account)}
+            "control": port_open(ACCOUNTS[account]["cmd"]) if control else None,
+            "credentials": _has_credentials(account)}
 
 
 def _has_credentials(account: str) -> bool:

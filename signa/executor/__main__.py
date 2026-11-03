@@ -30,6 +30,7 @@ from calls import Call, Leg  # noqa: E402
 from telegram_ui import Telegram  # noqa: E402
 
 from signa.executor import keepalive  # noqa: E402
+from signa.executor.ibevents import IbEvents  # noqa: E402
 from signa.executor.under import Under  # noqa: E402
 
 _log = Log("executor")
@@ -119,6 +120,7 @@ class Executor:
             c = self.cfg[account]
             self.brokers[account] = Broker("127.0.0.1", int(c["port"]), int(c["client_id"]), live=account == "live")
             self.unders[account] = Under(account, self.brokers[account], log)
+            IbEvents(account, log).attach(self.brokers[account].ib)  # sus avisos al log (diagnóstico)
         return self.brokers[account]
 
     async def rpc(self, method: str, a: dict):
