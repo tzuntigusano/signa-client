@@ -3,7 +3,8 @@ from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QHeaderView, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QHeaderView, QScrollArea, QSizePolicy, QVBoxLayout,
+                               QWidget)
 
 from .. import theme
 from ..widgets import Card, Segmented, button, chip_cell, hbox, kpi, label, provider_chip, table, tag, vbox, widget
@@ -125,8 +126,13 @@ class TradesScreen(Page):
         self.period = "today"
         self.seg = Segmented([("today", "Today"), ("week", "Last 7 days"), ("all", "All")], "today")
         self.seg.changed.connect(self._set_period)
+        self.provider = ""  # "" = todos; si no, el id del proveedor (o "mine")
+        self.prov = QComboBox()
+        self.prov.setMinimumWidth(170)
+        self.prov.currentIndexChanged.connect(self._set_provider)
+        self._fill_providers()
         self.msg = label("", "small", wrap=True)
-        self.bar = hbox(self.seg, self.msg, None, spacing=12)
+        self.bar = hbox(self.seg, self.prov, self.msg, None, spacing=12)
         self.add(self.bar)
         self.host = Card()
         self.add(self.host)
@@ -148,6 +154,27 @@ class TradesScreen(Page):
                     self.detail_requested.emit(t["order_ref"])  # sin vaciarla: nada de «Loading…» entretanto
         if providers is not None:
             self.names = {"mine": "My calls", **{p["id"]: p["name"] for p in providers}}
+        self._fill_providers()
+        self.refresh()
+
+    def _fill_providers(self):
+        """«All providers» + los que tienen operaciones (y los que sigues), sin perder lo elegido."""
+        ids = sorted({t.get("provider_id") for t in self.trades if t.get("provider_id")} | set(self.names) - {"mine"},
+                     key=lambda p: self.names.get(p, p).lower())
+        if "mine" in {t.get("provider_id") for t in self.trades}:
+            ids.append("mine")
+        self.prov.blockSignals(True)
+        self.prov.clear()
+        self.prov.addItem("All providers", "")
+        for pid in ids:
+            self.prov.addItem(self.names.get(pid, pid), pid)
+        i = self.prov.findData(self.provider)
+        self.prov.setCurrentIndex(max(i, 0))
+        self.provider = self.prov.currentData() or ""
+        self.prov.blockSignals(False)
+
+    def _set_provider(self, _index: int):
+        self.provider = self.prov.currentData() or ""
         self.refresh()
 
     def _set_period(self, key: str):
@@ -160,6 +187,8 @@ class TradesScreen(Page):
         for t in sorted(self.trades, key=lambda t: when(t.get("opened_at")) or now, reverse=True):
             d = when(t.get("opened_at"))
             if d is None:
+                continue
+            if self.provider and t.get("provider_id") != self.provider:
                 continue
             if self.period == "today" and d.date() != now.date():
                 continue
