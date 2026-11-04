@@ -120,7 +120,7 @@ class Executor:
             c = self.cfg[account]
             self.brokers[account] = Broker("127.0.0.1", int(c["port"]), int(c["client_id"]), live=account == "live")
             self.unders[account] = Under(account, self.brokers[account], log)
-            IbEvents(account, log).attach(self.brokers[account].ib)  # sus avisos al log (diagnóstico)
+            IbEvents(account, log, alert=self.alert).attach(self.brokers[account].ib)  # al log (diagnóstico)
         return self.brokers[account]
 
     async def rpc(self, method: str, a: dict):
@@ -172,6 +172,7 @@ class Executor:
         if method == "executions":
             await b.ensure()
             return [{"side": f.execution.side, "client_id": getattr(f.execution, "clientId", None),
+                     "order_id": getattr(f.execution, "orderId", None),  # el hub adopta sus compras pendientes
                      "shares": f.execution.shares, "price": f.execution.price, "exec_id": f.execution.execId,
                      "time": f.execution.time.isoformat() if getattr(f.execution, "time", None) else None,
                      "con_id": f.contract.conId} for f in await b.ib.reqExecutionsAsync()]
@@ -223,6 +224,13 @@ class Executor:
                                              "positions": positions(b), "net_liq": st.get("net_liq")})
 
     # --- Telegram -----------------------------------------------------------------------------------
+    def alert(self, text: str):
+        """Un aviso de IBKR para el usuario (otra sesión con su usuario…): por el primero de sus bots de Telegram."""
+        log(text.splitlines()[0])
+        bot = next(iter(self.bots.values()), None)
+        if bot is not None:
+            asyncio.ensure_future(bot.send(text))
+
     async def telegram(self, method: str, a: dict):
         bot = self.bots.get(a.get("provider"))
         if bot is None:

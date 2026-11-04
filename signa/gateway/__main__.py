@@ -1,6 +1,6 @@
 """SUPERVISOR de un IB Gateway (una cuenta): el bucle de StartIBC.bat en Python. Lanza el Gateway con IBC y lo relanza
-en su reinicio diario (sin login), en frío o si caducó el 2FA / el diálogo de login. Termina cuando el Gateway se
-cierra de verdad (STOP desde la app, o lo cierras tú).
+en su reinicio diario (sin login), en frío o si caducó el 2FA / el diálogo de login, y si se cierra SOLO con el
+mercado abierto (revive). Termina cuando lo para Signa (STOP desde la app) o lo cierras tú fuera de horario.
 
     venv\\Scripts\\pythonw -m signa.gateway paper|live      (lo arranca la app: pantalla IBKR)"""
 import subprocess
@@ -11,7 +11,7 @@ from signa.core import runtime
 from signa.core.logs import Log, single_instance
 
 from . import ACCOUNTS, GatewayError, command_line, credentials, install, new_session, next_step, port_open, \
-    restart_option, settings_dir, write_config
+    restart_option, revive, settings_dir, stop_flag, write_config
 
 MAX_RELOGINS = 10  # reintentos seguidos con login (2FA sin aprobar…): no avisar al móvil eternamente
 LOGIN_WAIT = 180  # s: lo más que se dejan las credenciales en el config.ini esperando a que entre
@@ -36,6 +36,7 @@ def main(account: str) -> int:
         say(f"can't start: {e}")
         return 1
     settings = settings_dir(account)
+    stop_flag(account).unlink(missing_ok=True)  # una marca vieja (un STOP que no llegó a cerrarlo) no cuenta
     session = new_session()
     relogins, cold = 0, False
     out = (log.path.parent / f"gateway-{account}.java.log").open("a", encoding="utf-8", errors="ignore")
@@ -60,7 +61,11 @@ def main(account: str) -> int:
             write_config(account)  # dentro (o ya fuera): sin credenciales en el disco
         code = proc.wait()
         step = next_step(code, settings, session)
-        say(f"Gateway exited (code {code}) -> {step or 'stop'}")
+        if step is None and revive(account):
+            step = "restart"
+            say(f"Gateway closed by itself during market hours (code {code}) -> starting it again")
+        else:
+            say(f"Gateway exited (code {code}) -> {step or 'stop'}")
         if step is None:
             return 0
         if step == "restart":

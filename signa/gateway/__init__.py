@@ -164,7 +164,7 @@ def config_text(account: str, base: str, creds: tuple[str, str] | None = None, n
         secrets_.update(IbLoginId=creds[0], IbPassword=creds[1])
     force = {"TradingMode": account, "OverrideTwsApiPort": str(port["api"]), "CommandServerPort": str(port["cmd"]),
              "BindAddress": "127.0.0.1", "ControlFrom": "", "ReloginAfterSecondFactorAuthenticationTimeout": "yes",
-             "AutoRestartTime": restart_time(now), **secrets_}
+             "AutoRestartTime": restart_time(now), "ExistingSessionDetectedAction": "primary", **secrets_}
     seen, lines = set(), []
     for key, val in _ini(base):
         if val is None:
@@ -253,6 +253,23 @@ def command_line(account: str, gw: Path, config: Path, session: str, restart: st
         f"-DjtsConfigDir={settings}", f"-Dibcsessionid={session}"]
     return [str(java(gw)), "-cp", classpath(gw), *opts, *([restart] if restart else []), ENTRY, str(config),
             account]
+
+
+def stop_flag(account: str) -> Path:
+    """Lo deja stop() antes de cerrar el Gateway: así el supervisor distingue «lo ha parado Signa» de «se ha cerrado
+    solo» (Paula 04/11: el diálogo de otra sesión con su usuario lo cerró dos veces y se quedó 10 min apagado)."""
+    return settings_dir(account) / "SIGNA_STOP"
+
+
+def revive(account: str, now=None) -> bool:
+    """¿Volver a arrancar un Gateway que se ha cerrado sin que nadie lo pidiera desde Signa? Solo con el mercado
+    abierto (fuera de horario, cerrarlo es cosa tuya y no hace falta). Consume la marca de stop()."""
+    flag = stop_flag(account)
+    if flag.exists():
+        flag.unlink(missing_ok=True)
+        return False
+    from ..core.market import market_open
+    return market_open(now)
 
 
 def next_step(code: int, settings: Path, session: str, twofa_restart: bool = True) -> str | None:
@@ -356,6 +373,10 @@ def stop(account: str, wait: float = 60) -> str:
     comandos), terminando su proceso. Devuelve cómo se hizo."""
     import psutil
     how = "none"
+    try:
+        stop_flag(account).touch()  # que el supervisor no lo vuelva a arrancar (revive)
+    except OSError:
+        pass
     if port_open(ACCOUNTS[account]["cmd"]):
         send_command(account, "STOP")
         how = "stop"
