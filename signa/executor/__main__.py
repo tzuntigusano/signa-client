@@ -25,7 +25,7 @@ from signa.core.appkey import saved_key
 from signa.core.logs import HOME, Log, single_instance
 
 sys.path.insert(0, str(Path(__file__).with_name("copier")))
-from broker import Broker, Plan, PlanError  # noqa: E402
+from broker import DONE, Broker, Plan, PlanError  # noqa: E402
 from calls import Call, Leg  # noqa: E402
 from telegram_ui import Telegram  # noqa: E402
 
@@ -83,14 +83,36 @@ def account_status(cfg: dict, broker: Broker | None, gateway: bool) -> dict:
     return st
 
 
+def order_kind(t) -> str:
+    """sl | tp | sell (venta a mercado o a tu precio aún sin llenar) | buy."""
+    o = t.order
+    if o.action == "BUY":
+        return "buy"
+    if o.orderType in ("STP", "STP LMT"):
+        return "sl"
+    return "tp" if o.orderRef == Broker.TP_REF else "sell"
+
+
+def live_order(t) -> dict:
+    """Una orden viva tal y como la enseña Trades (fila hija de su operación, con su botón de cancelar)."""
+    o = t.order
+    px = o.auxPrice if o.orderType in ("STP", "STP LMT") else o.lmtPrice if o.orderType == "LMT" else None
+    px = px if isinstance(px, (int, float)) and 0 < px < 1e9 else None  # IBKR pone 1.79e308 cuando no hay
+    return {"id": o.orderId, "kind": order_kind(t), "action": o.action, "qty": o.totalQuantity, "type": o.orderType,
+            "price": px, "status": t.orderStatus.status}
+
+
 def protections(b: Broker) -> dict:
-    """{conId: {"sl": [cantidades], "tp": [cantidades]}} de las órdenes vivas de ESTE programa, con las mismas
-    funciones del broker del copiador (_our_stops / _our_tps)."""
+    """{conId: {"sl": [cantidades], "tp": [cantidades], "live": [órdenes]}} de las órdenes vivas de ESTE programa, con
+    las mismas funciones del broker del copiador (_our_stops / _our_tps). «live» (0.1.25): todas, también las ventas
+    y compras aún sin llenar, para Trades y para no mandar una venta encima de otra."""
     out = {}
-    for cid in {t.contract.conId for t in b.ib.openTrades() if t.order.action == "SELL"}:
+    trades = [t for t in b.ib.openTrades() if t.orderStatus.status not in DONE]
+    for cid in {t.contract.conId for t in trades}:
         con = type("C", (), {"conId": cid})()
         out[str(cid)] = {"sl": [t.order.totalQuantity for t in b._our_stops(con)],
-                         "tp": [t.order.totalQuantity for t in b._our_tps(con)]}
+                         "tp": [t.order.totalQuantity for t in b._our_tps(con)],
+                         "live": [live_order(t) for t in trades if t.contract.conId == cid]}
     return out
 
 
@@ -169,6 +191,18 @@ class Executor:
             return await b.set_tp(plan, a["price"], on_fill=cb)
         if method == "remove_protect":
             return await b.remove_protect(plan, a["kind"])
+        if method == "cancel_order":  # Trades › la orden viva de una operación › Cancel (0.1.25)
+            await b.ensure()
+            oid, cid = int(a["order_id"]), int(a["con_id"])
+            trs = [t for t in b.ib.openTrades() if t.order.orderId == oid and t.contract.conId == cid
+                   and t.orderStatus.status not in DONE]
+            if not trs:
+                return f"ℹ️ #{oid} isn't working any more (filled or cancelled)"
+            await b._cancel(trs)
+            st = trs[0].orderStatus.status
+            if st == "Filled":
+                return f"ℹ️ #{oid} filled before it could be cancelled"
+            return f"✅ #{oid} cancelled" if st in ("Cancelled", "ApiCancelled") else f"⏳ #{oid} → {st}"
         if method == "executions":
             await b.ensure()
             return [{"side": f.execution.side, "client_id": getattr(f.execution, "clientId", None),

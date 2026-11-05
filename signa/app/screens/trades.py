@@ -11,7 +11,9 @@ from ..widgets import Card, Segmented, button, chip_cell, hbox, kpi, label, prov
 from .base import Page
 
 STATUS = {"open": ("Open", "accent"), "closed": ("Closed", "neutral"), "skipped": ("Not bought", "warn"),
-          "error": ("Error", "bad"), "pending": ("Pending", "neutral")}
+          "error": ("Error", "bad"), "pending": ("Pending", "neutral"),
+          # (Ivan 05/11) órdenes vivas en IBKR sin posición: de una operación de Signa ya sin contratos, o de nada
+          "noposition": ("No position", "neutral"), "noexist": ("Not in Signa", "neutral")}
 
 
 def when(ts: str | None) -> datetime | None:
@@ -104,6 +106,10 @@ class TradesScreen(Page):
     trade_requested = Signal(str)   # order_ref -> la ventana abre el drawer «Trade»
     quotes_requested = Signal(list)  # [order_ref] de las abiertas a la vista -> precios (cada segundo)
     sell_all_requested = Signal(str)  # order_ref -> la ventana confirma y vende todo a mercado
+    cancel_order_requested = Signal(str, int, str)  # (order_ref, orden de IBKR, su texto) -> confirma y la cancela
+    live_orders_requested = Signal()  # sus órdenes vivas SIN operación abierta (cada 2 s, mientras se ve)
+    live_cancel_requested = Signal(dict)  # una de esas -> la ventana confirma y la cancela
+    cancel_buy_requested = Signal(str)  # order_ref de una compra «Waiting to fill» -> confirma y la cancela
 
     def __init__(self):
         super().__init__("Trades")
@@ -119,6 +125,9 @@ class TradesScreen(Page):
         self.live.start()
         self.quotes: dict[str, dict] = {}  # order_ref -> {bid, entry, held…} (el último que llegó)
         self.now_items: dict[str, object] = {}  # order_ref -> su celda «Now» (se cambia sin rehacer la tabla)
+        self.painted_orders: dict[str, tuple] = {}  # order_ref -> sus órdenes vivas pintadas (si cambian, se repinta)
+        self.loose: list[dict] = []  # órdenes vivas sin operación abierta con posición (live_orders)
+        self._ticks = 0
         self.qtimer = QTimer(self)
         self.qtimer.setInterval(QUOTES_EVERY)
         self.qtimer.timeout.connect(self._ask_quotes)
@@ -213,7 +222,8 @@ class TradesScreen(Page):
                 w.hide()
                 w.deleteLater()
         rows = self._visible()
-        if not rows:
+        loose = self._loose_rows(rows)
+        if not rows and not loose:
             box = vbox(label("No trades yet" if not self.trades else "No trades in this period", "h2"),
                        label("Every order Signa places shows up here with its provider, prices, exit and P&L. Calls "
                              "it doesn't buy are listed too, with the reason.", "mu", wrap=True),
@@ -235,6 +245,7 @@ class TradesScreen(Page):
                                  else "Price ran, too expensive…", "bad" if errors else None),
                              spacing=12, margins=(12, 12, 12, 12)))
         lay.addWidget(strip)
+        rows = loose + rows  # las órdenes sin operación de Signa, arriba (atenuadas)
         data = []
         for t in rows:
             d = when(t.get("opened_at"))
@@ -267,9 +278,19 @@ class TradesScreen(Page):
             tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
             tbl.setColumnWidth(col, w)
         for i, t in enumerate(rows):
-            tbl.setCellWidget(i, 1, chip_cell(provider_chip(self.names.get(t["provider_id"], t["provider_id"]),
-                                                            t["provider_id"])))
-            name, kind = STATUS.get(t["status"], STATUS["error"])
+            dim = t.get("live_only") or (self._loose_of(t) and not self._holds(t))
+            if t.get("live_only"):
+                tbl.setCellWidget(i, 1, chip_cell(tag("IBKR", "neutral")))
+            else:
+                tbl.setCellWidget(i, 1, chip_cell(provider_chip(self.names.get(t["provider_id"], t["provider_id"]),
+                                                                t["provider_id"])))
+            name, kind = STATUS.get("noposition" if dim and not t.get("live_only") else t["status"], STATUS["error"])
+            if dim:  # atenuada: no hay posición (sus órdenes, debajo, sí se pueden cancelar)
+                for col in range(tbl.columnCount()):
+                    if tbl.item(i, col):
+                        tbl.item(i, col).setForeground(QColor(theme.current["mu"]))
+                tbl.item(i, 2).setToolTip("Working orders in IBKR but no position: cancel them below if you don't "
+                                          "want them")
             tbl.setCellWidget(i, 9, chip_cell(tag(name, kind)))
             go = button("Trade", "key")  # igual en todas las filas
             go.setFixedSize(64, 28)
@@ -281,6 +302,13 @@ class TradesScreen(Page):
             sell.setToolTip("Sell everything you hold of this trade at market (asks you first)")
             sell.clicked.connect(lambda _=False, ref=t["order_ref"]: self.sell_all_requested.emit(ref))
             sell.setVisible(self._holds(t))
+            go.setVisible(not t.get("live_only"))
+            if t["status"] == "pending":  # compra aún sin llenar: en vez de «Sell all», cancelarla
+                sell.setText("Cancel buy")
+                sell.setToolTip("Cancel this buy in IBKR (asks you first)")
+                sell.clicked.disconnect()
+                sell.clicked.connect(lambda _=False, ref=t["order_ref"]: self.cancel_buy_requested.emit(ref))
+                sell.setVisible(True)
             sell.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             keep = sell.sizePolicy()
             keep.setRetainSizeWhenHidden(True)  # «Trade» siempre en el mismo sitio
@@ -291,23 +319,35 @@ class TradesScreen(Page):
                 tbl.item(i, 8).setToolTip("Gain right now on what you hold (bid vs your entry), every second")
             if tbl.item(i, 5):
                 tbl.item(i, 5).setToolTip(t.get("exit_reason") or "")
-            tbl.item(i, 2).setToolTip(f"{t.get('contract', '')} · "
-                                      + ("Live account" if t.get("account") == "live" else "Paper account"))
+            if not dim:
+                tbl.item(i, 2).setToolTip(f"{t.get('contract', '')} · "
+                                          + ("Live account" if t.get("account") == "live" else "Paper account"))
         tbl.setTextElideMode(Qt.ElideRight)
         tbl.setStyleSheet(f"QTableWidget {{ border: 0; border-top: 1px solid {theme.current['line']}; "
                           "border-radius: 0; }")
-        # desplegadas: una fila debajo, a todo lo ancho, con su cronología (de abajo arriba para no mover índices)
+        # debajo de cada una (de abajo arriba para no mover índices): sus ÓRDENES VIVAS en IBKR, sangradas como hijas
+        # suyas con su botón de cancelar, y, si está desplegada, su cronología a todo lo ancho
         row_of = list(rows)
+        self.painted_orders = {}
         for i in reversed(range(len(rows))):
             ref = rows[i]["order_ref"]
-            if ref not in self.expanded:
-                continue
-            tbl.insertRow(i + 1)
-            tbl.setSpan(i + 1, 0, 1, tbl.columnCount())
-            panel = self._timeline(rows[i])
-            tbl.setCellWidget(i + 1, 0, panel)
-            tbl.setRowHeight(i + 1, panel.sizeHint().height())
-            row_of.insert(i + 1, None)
+            if rows[i].get("live_only"):
+                row_of[i] = None  # sin operación: no se despliega
+            if ref in self.expanded and not rows[i].get("live_only"):
+                tbl.insertRow(i + 1)
+                tbl.setSpan(i + 1, 0, 1, tbl.columnCount())
+                panel = self._timeline(rows[i])
+                tbl.setCellWidget(i + 1, 0, panel)
+                tbl.setRowHeight(i + 1, panel.sizeHint().height())
+                row_of.insert(i + 1, None)
+            orders = self._orders(rows[i]) + self._loose_of(rows[i])
+            self.painted_orders[ref] = self._orders_key(orders)
+            for o in reversed(orders):
+                tbl.insertRow(i + 1)
+                tbl.setSpan(i + 1, 0, 1, tbl.columnCount())
+                tbl.setCellWidget(i + 1, 0, self._order_row(ref, o))
+                tbl.setRowHeight(i + 1, 36)
+                row_of.insert(i + 1, None)
         tbl.setFixedHeight(tbl.horizontalHeader().height() + sum(tbl.rowHeight(r) for r in range(tbl.rowCount())) + 2)
         tbl.setCursor(Qt.PointingHandCursor)
         tbl.cellClicked.connect(lambda r, _c: self._toggle(row_of[r]) if row_of[r] else None)
@@ -322,13 +362,80 @@ class TradesScreen(Page):
     def _ask_quotes(self):
         if not self.isVisible():
             return
+        self._ticks += 1
+        if self._ticks % 2 == 1:
+            self.live_orders_requested.emit()
         refs = [t["order_ref"] for t in self._visible() if self._holds(t)]
         if refs:
             self.quotes_requested.emit(refs)
 
     def set_quotes(self, quotes: dict):
         self.quotes.update(quotes or {})
+        if any(self._orders_key(self._orders(t)) != self.painted_orders.get(t["order_ref"], ())
+               for t in self._visible() if self._holds(t)):
+            self.refresh()  # una orden nueva, llena o cancelada: las filas hijas cambian
+            return
         self._paint_quotes()
+
+    # --- sus órdenes vivas en IBKR: filas hijas debajo de la operación ---------------------------------
+    def _orders(self, t: dict) -> list[dict]:
+        if not self._holds(t):
+            return []
+        return [o for o in (self.quotes.get(t["order_ref"]) or {}).get("orders") or [] if o.get("id")]
+
+    def set_live_orders(self, orders: list[dict]):
+        """Sus órdenes vivas sin operación abierta con posición (cada 2 s): si cambian, se repinta."""
+        orders = [o for o in orders or [] if o.get("id")]
+        if self._orders_key(orders) != self._orders_key(self.loose):
+            self.loose = orders
+            self.refresh()
+
+    def _loose_of(self, t: dict) -> list[dict]:
+        """Las de esa fila: las de su operación (order_ref) o, si es una sin operación, las de su contrato."""
+        if t.get("live_only"):
+            return [o for o in self.loose if (o.get("account"), o.get("con_id")) == t["key"]]
+        return [o for o in self.loose if o.get("order_ref") == t["order_ref"]]
+
+    def _loose_rows(self, rows: list[dict]) -> list[dict]:
+        """Una fila «padre» atenuada por cada contrato con órdenes vivas cuya operación no está en la tabla."""
+        shown = {t["order_ref"] for t in rows}
+        out, seen = [], set()
+        for o in self.loose:
+            key = (o.get("account"), o.get("con_id"))
+            if o.get("order_ref") in shown or key in seen:
+                continue
+            seen.add(key)
+            out.append({"order_ref": f"live:{key[0]}:{key[1]}", "key": key, "live_only": True,
+                        "status": "noexist" if not o.get("order_ref") else "noposition",
+                        "contract": o.get("contract") or f"conId {key[1]}", "provider_id": "", "account": key[0],
+                        "exit_reason": "Working orders in IBKR, no position in Signa"})
+        return out
+
+    @staticmethod
+    def _orders_key(orders: list[dict]) -> tuple:
+        return tuple((o.get("id"), o.get("text")) for o in orders)
+
+    def _order_row(self, ref: str, o: dict) -> QWidget:
+        """«   └  Stop loss · SELL 1 at 5.26 · #37269 · Submitted            [Cancel]», sangrada bajo su operación."""
+        c = theme.current
+        tone = {"sl": "bad", "tp": "good", "sell": "warn", "buy": "accent"}.get(o.get("kind"), "neutral")
+        name = {"sl": "SL", "tp": "TP", "sell": "Sell", "buy": "Buy"}.get(o.get("kind"), "Order")
+        text = label(o.get("text") or "", "small")
+        text.setToolTip("Working order of this trade in IBKR")
+        cancel = button("Cancel", "sellrow")
+        cancel.setFixedSize(76, 26)
+        cancel.setToolTip("Cancel this order in IBKR (asks you first)")
+        if o.get("con_id"):  # sin operación abierta: se cancela directamente por su número
+            cancel.clicked.connect(lambda _=False, order=dict(o): self.live_cancel_requested.emit(order))
+        else:
+            cancel.clicked.connect(lambda _=False, oid=int(o["id"]), txt=o.get("text") or "":
+                                   self.cancel_order_requested.emit(ref, oid, txt))
+        box = QFrame()
+        box.setObjectName("OrderRow")
+        box.setStyleSheet(f"QFrame#OrderRow {{ background: {c['sub']}; border-left: 3px solid {c['line']}; }}")
+        box.setLayout(hbox(label("└", "mu"), chip_cell(tag(name, tone)), text, None, cancel, spacing=10,
+                           margins=(56, 2, 12, 2)))
+        return box
 
     def _paint_quotes(self):
         c = theme.current

@@ -8,7 +8,8 @@ queda como tu take profit). No decide nada: manda lo que pulsas y enseña lo que
 import re
 
 from PySide6.QtCore import QRect, Qt, QTimer, Signal
-from PySide6.QtWidgets import QFrame, QGridLayout, QLineEdit, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QFrame, QGridLayout, QLineEdit, QMessageBox, QScrollArea, QSizePolicy, QVBoxLayout,
+                               QWidget)
 
 from .. import theme
 from ..widgets import Segmented, button, hbox, label, provider_chip, tag, vbox, widget
@@ -190,6 +191,7 @@ class TradeDrawer(QWidget):
             note.setTextInteractionFlags(Qt.TextSelectableByMouse)
             lay.addWidget(note)
         if is_open:
+            lay.addWidget(self._rules_card())
             lay.addWidget(self._sell_card(q.get("held") or t.get("held") or 0))
             lay.addWidget(self._level_card("stop", q))
             lay.addWidget(self._level_card("tp", q))
@@ -198,8 +200,8 @@ class TradeDrawer(QWidget):
         else:
             lay.addWidget(self._buy_card("Buy now"))
         lay.addWidget(label("What you do here overrides the automatic rules for this trade: Signa stops moving its "
-                            "stop and take profit. Everything is logged in the trade's timeline.", "small",
-                            wrap=True))
+                            "stop and take profit («Apply rules» gives it back). Everything is logged in the trade's "
+                            "timeline.", "small", wrap=True))
         lay.addStretch(1)
         self.scroll.setWidget(page)
 
@@ -287,6 +289,28 @@ class TradeDrawer(QWidget):
                 price.setText(f"{now:.2f}")
         seg.changed.connect(switch)
         return seg, price
+
+    def _rules_card(self) -> QFrame:
+        """«Apply rules»: cancela sus órdenes en IBKR (espera a que se confirme) y que la gestione la estrategia."""
+        go = button("Apply rules", "primary")
+        go.setToolTip("Cancel every order of this trade in IBKR and let Signa's rules manage it again")
+
+        def ask():
+            box = QMessageBox(self)
+            box.setWindowTitle("Apply rules")
+            box.setIcon(QMessageBox.Question)
+            box.setText("Cancel every order of this trade in IBKR and give it back to Signa's rules?")
+            box.setInformativeText("Signa waits until IBKR confirms they're all cancelled, then places the "
+                                   "strategy's stop loss (and take profit, if it has one) and follows its rules.")
+            yes = box.addButton("Apply rules", QMessageBox.AcceptRole)
+            box.addButton("Cancel", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is yes:
+                self._send("apply_rules")
+        go.clicked.connect(ask)
+        body = label("Your stop loss, take profit and other orders are cancelled; the strategy's own take over.",
+                     "small", wrap=True)
+        return self._card("Signa's rules", body, go)
 
     def _sell_card(self, held: int) -> QFrame:
         step = Stepper(1, max(1, held), max(1, held))

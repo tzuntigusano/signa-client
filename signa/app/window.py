@@ -63,6 +63,7 @@ class MainWindow(QMainWindow):
         self.tray = self._tray() if services else None
         self.demo_quotes: dict[str, dict] = {}
         self.selling: set[str] = set()  # «Sell all» de Trades en curso: su resultado sale encima de la tabla
+        self.sent: dict[str, tuple] = {}  # order_ref -> (acción, valor) en curso: para repetirla tras cancelar
         self.setWindowTitle("Signa")
         self.resize(1440, 860)
         self.setMinimumSize(1280, 720)  # Trades lleva muchas columnas (y llevará más)
@@ -239,6 +240,10 @@ class MainWindow(QMainWindow):
         self.screens["trades"].trade_requested.connect(self._open_trade)
         self.screens["trades"].quotes_requested.connect(self._trade_quotes)
         self.screens["trades"].sell_all_requested.connect(self._sell_all)
+        self.screens["trades"].cancel_order_requested.connect(self._cancel_order)
+        self.screens["trades"].live_orders_requested.connect(self._live_orders)
+        self.screens["trades"].live_cancel_requested.connect(self._live_cancel)
+        self.screens["trades"].cancel_buy_requested.connect(self._cancel_buy)
         self.screens["stats"].stats_requested.connect(
             lambda period: self.client.request("stats", period=period) if self.client else None)
         if self.demo is not None:
@@ -435,8 +440,17 @@ class MainWindow(QMainWindow):
         elif d.get("type") == "trade_quotes":
             if self.screens:
                 self.screens["trades"].set_quotes(d.get("quotes") or {})
+        elif d.get("type") == "live_orders":
+            if self.screens:
+                self.screens["trades"].set_live_orders(d.get("orders") or [])
+        elif d.get("type") == "live_cancel":
+            if self.screens:
+                self.screens["trades"].note(d.get("note") or d.get("error") or "", bool(d.get("ok")))
         elif d.get("type") == "trade_action":
             ref = d.get("order_ref", "")
+            if not d.get("ok") and d.get("pending") and self._ask_cancel_pending(ref, d):
+                return  # se ha pedido «cancelar la pendiente y seguir»: el resultado llega con esa respuesta
+            self.sent.pop(ref, None)
             self.drawer.set_result(ref, bool(d.get("ok")), d.get("note") or d.get("error") or "")
             if ref in self.selling and self.screens:  # «Sell all» de la tabla: el resultado, encima de ella
                 self.selling.discard(ref)
@@ -529,9 +543,97 @@ class MainWindow(QMainWindow):
             self.drawer.set_result(ref, True, demo_action(self.demo_quotes.get(ref) or {}, action, value))
             self.drawer.set_quote(ref, self.demo_quotes.get(ref))
         elif self.client is not None:
+            self.sent[ref] = (action, value)  # si hay una venta pendiente, se repite tras cancelarla (si dices que sí)
             self.client.request("trade_action", order_ref=ref, action=action, value=value)
         else:
             self.drawer.set_result(ref, False, "Not connected to the Signa server.")
+
+    def _ask_cancel_pending(self, ref: str, d: dict) -> bool:
+        """Has pedido vender (o un SL/TP) con una venta de ese contrato aún viva en IBKR: ¿cancelarla y seguir?"""
+        action, value = self.sent.pop(ref, (None, None))
+        if action is None:
+            return False
+        lines = "\n".join(o.get("text") or f"#{o.get('id')}" for o in d.get("pending") or [])
+        box = QMessageBox(self)
+        box.setWindowTitle("Pending sell")
+        box.setIcon(QMessageBox.Warning)
+        box.setText("You have a sell of this contract still waiting to fill in IBKR:")
+        box.setInformativeText(f"{lines}\n\nCancel it and send yours now?")
+        yes = box.addButton("Cancel it && continue", QMessageBox.AcceptRole)
+        box.addButton("Keep it", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not yes or self.client is None:
+            return False
+        self.sent[ref] = ("cancel_pending", None)
+        self.client.request("trade_action", order_ref=ref, action="cancel_pending",
+                            value={"action": action, "value": value})
+        return True
+
+    def _cancel_order(self, ref: str, order_id: int, text: str):
+        """Trades › la fila hija de una operación (su SL, su TP, una venta sin llenar…) › Cancel (se confirma)."""
+        t = next((x for x in self.state.get("trades", []) if x["order_ref"] == ref), None)
+        live = (t or {}).get("account") == "live"
+        box = QMessageBox(self)
+        box.setWindowTitle("Cancel order")
+        box.setIcon(QMessageBox.Warning if live else QMessageBox.Question)
+        box.setText(f"Cancel this order in IBKR?\n\n{text}")
+        box.setInformativeText(("LIVE account. " if live else "")
+                               + "If it's the stop loss or take profit, Signa won't put it back: you manage it.")
+        yes = box.addButton("Cancel order", QMessageBox.AcceptRole)
+        box.addButton("Keep it", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not yes:
+            return
+        tr = self.screens["trades"]
+        if self.client is None or self.demo is not None:
+            tr.note("Not connected to the Signa server.", False)
+            return
+        self.selling.add(ref)  # el resultado, encima de la tabla
+        tr.note(f"Cancelling order #{order_id}…")
+        self.client.request("trade_action", order_ref=ref, action="cancel_order", value={"id": order_id})
+
+    def _cancel_buy(self, ref: str):
+        """Trades › una compra «Waiting to fill» › Cancel buy (siempre se confirma)."""
+        t = next((x for x in self.state.get("trades", []) if x["order_ref"] == ref), None)
+        if t is None:
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Cancel buy")
+        box.setIcon(QMessageBox.Question)
+        box.setText(f"Cancel the buy of {t.get('contract', '')} that is still waiting to fill in IBKR?")
+        box.setInformativeText("LIVE account." if t.get("account") == "live" else "Paper account.")
+        yes = box.addButton("Cancel buy", QMessageBox.AcceptRole)
+        box.addButton("Keep it", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not yes:
+            return
+        tr = self.screens["trades"]
+        if self.client is None or self.demo is not None:
+            tr.note("Not connected to the Signa server.", False)
+            return
+        self.selling.add(ref)  # el resultado, encima de la tabla
+        tr.note(f"Cancelling the buy of {t.get('contract', '')}…")
+        self.client.request("trade_action", order_ref=ref, action="cancel_buy")
+
+    def _live_orders(self):
+        if self.client is not None and self.demo is None:
+            self.client.request("live_orders")
+
+    def _live_cancel(self, o: dict):
+        """Trades › una orden viva SIN operación abierta (una compra sin llenar, el SL de una cerrada…) › Cancel."""
+        live = o.get("account") == "live"
+        box = QMessageBox(self)
+        box.setWindowTitle("Cancel order")
+        box.setIcon(QMessageBox.Warning if live else QMessageBox.Question)
+        box.setText(f"Cancel this order in IBKR?\n\n{o.get('contract', '')} · {o.get('text', '')}")
+        box.setInformativeText("LIVE account." if live else "Paper account.")
+        yes = box.addButton("Cancel order", QMessageBox.AcceptRole)
+        box.addButton("Keep it", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not yes or self.client is None:
+            return
+        self.screens["trades"].note(f"Cancelling order #{o.get('id')}…")
+        self.client.request("live_cancel", account=o.get("account"), con_id=o.get("con_id"), order_id=o.get("id"))
 
     def _trade_quotes(self, refs: list):
         """Trades: el % de ahora de las abiertas (cada segundo, mientras se ve la pantalla)."""
@@ -570,6 +672,7 @@ class MainWindow(QMainWindow):
             tr.note(demo_action(q, "sell", q.get("held") or t.get("held") or 0))
         elif self.client is not None:
             self.selling.add(ref)
+            self.sent[ref] = ("sell", "all")
             tr.note(f"Selling all {t.get('held')} of {t.get('contract', '')} at market…")
             self.client.request("trade_action", order_ref=ref, action="sell", value="all")
         else:
