@@ -13,22 +13,11 @@ from .base import Page
 from .telegram import Job, clear
 
 ACCOUNTS = (("paper", "Paper account"), ("live", "Live account"))
+gateway_states = local.gateway_states
 
 
 def usd(v) -> str:
     return "—" if v is None else f"${v:,.0f}"
-
-
-def gateway_states() -> dict:
-    """Estado de los dos Gateway (escanea procesos y el llavero: va en un hilo)."""
-    out = {}
-    for name, _ in ACCOUNTS:
-        st = gateway.status(name)
-        creds = gateway.credentials(name) if st["credentials"] else None
-        st["user"] = gateway.masked(creds[0]) if creds else None
-        st["can_import"] = (gateway.OLD_IBC / name / "config.ini").exists()
-        out[name] = st
-    return out
 
 
 class LoginDialog(QDialog):

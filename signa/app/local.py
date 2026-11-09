@@ -122,6 +122,32 @@ def start_gateway(account: str):
     gateway.start(account, runtime.module_cmd("signa.gateway", account), str(runtime.ROOT))
 
 
+GW_ACTIONS = ("connect", "stop", "restart")
+
+
+def gateway_states() -> dict:
+    """Estado de los dos Gateway (escanea procesos y el llavero: llamarlo en un hilo). El usuario, tapado."""
+    out = {}
+    for name in gateway.ACCOUNTS:
+        st = gateway.status(name)
+        creds = gateway.credentials(name) if st["credentials"] else None
+        st["user"] = gateway.masked(creds[0]) if creds else None
+        st["can_import"] = (gateway.OLD_IBC / name / "config.ini").exists()
+        out[name] = st
+    return out
+
+
+def gateway_action(account: str, action: str) -> str:
+    """Conectar / desconectar / reiniciar un Gateway (pantalla IBKR del PC o, vía el ejecutor, la del móvil).
+    BLOQUEA (parar o reiniciar, hasta un minuto)."""
+    if account not in gateway.ACCOUNTS or action not in GW_ACTIONS:
+        raise gateway.GatewayError(f"unknown Gateway action {account!r} {action!r}")
+    if action == "connect":
+        start_gateway(account)
+        return "started"
+    return stop_gateway(account) if action == "stop" else restart_gateway(account)
+
+
 def stop_gateway(account: str) -> str:
     return gateway.stop(account)
 

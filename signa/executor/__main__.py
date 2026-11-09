@@ -36,6 +36,7 @@ from signa.executor.under import Under  # noqa: E402
 _log = Log("executor")
 LOCK_PORT = 47691
 RETRY = (2, 5, 10, 30)
+GW_WAIT = 8  # s: lo que espera una acción de Gateway pedida desde el móvil antes de contestar «working»
 STATUS = HOME / "executor_status.json"  # lo lee la pantalla IBKR de la app (solo local)
 SUMMARY_TAGS = {"NetLiquidation": "net_liq", "AvailableFunds": "available", "BuyingPower": "buying_power"}
 DEFAULTS = {"paper": {"port": 4002, "client_id": 95}, "live": {"port": 4001, "client_id": 96}, "telegram": {}}
@@ -151,6 +152,10 @@ class Executor:
             return await self.telegram(method, a)
         if method == "diag":  # panel de admin › usuario › Status & logs: su estado y sus logs (sin secretos ni dinero)
             return await asyncio.to_thread(logs.diagnostics, bool(a.get("logs")))
+        if method == "ibkr":  # IBKR del móvil (0.1.30): lo mismo que la pantalla IBKR del PC
+            return await self.ibkr_status()
+        if method == "gw":  # IBKR del móvil: conectar / desconectar / reiniciar un Gateway
+            return await self.gateway_action(str(a.get("account")), str(a.get("action")))
         b = self.broker(a.get("account", "paper"))
         if method == "ensure":
             await b.ensure()
@@ -216,6 +221,29 @@ class Executor:
             await b.ib.qualifyContractsAsync(*cs)
             return [wire.contract_to(c) for c in cs]
         raise ValueError(f"unknown method {method}")
+
+    async def ibkr_status(self) -> dict:
+        """Los dos Gateway (proceso, API, login guardado con el usuario tapado) y la conexión de Signa con cada
+        cuenta (con su dinero: solo lo ve el dueño, en su móvil). Sin efectos: no suscribe ni reconecta."""
+        from signa.app import local
+        gws = await asyncio.to_thread(local.gateway_states)
+        accounts = {name: account_status(self.cfg[name], self.brokers.get(name),
+                                         await port_open(int(self.cfg[name]["port"])))
+                    for name in ("paper", "live")}
+        return {"gateways": gws, "accounts": accounts}
+
+    async def gateway_action(self, account: str, action: str) -> dict:
+        """Lo hace en un hilo; si tarda más de GW_WAIT (parar/reiniciar espera al Gateway) sigue solo y se contesta
+        «working»: el móvil ve el resultado en el siguiente estado."""
+        from signa.app import local
+        log(f"IBKR from the phone: {action} {account} Gateway")
+        task = asyncio.ensure_future(asyncio.to_thread(local.gateway_action, account, action))
+        try:
+            return {"done": True, "how": await asyncio.wait_for(asyncio.shield(task), GW_WAIT)}
+        except asyncio.TimeoutError:
+            task.add_done_callback(lambda t: t.cancelled() or not t.exception() or
+                                   log(f"IBKR {action} {account} failed: {t.exception()}"))
+            return {"done": False, "how": "working"}
 
     def _callback(self, cb: int | None):
         """La orden se llena MÁS TARDE: se avisa al motor con el mismo id."""
