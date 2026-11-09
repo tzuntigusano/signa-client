@@ -6,8 +6,11 @@ import re
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import QFrame, QLineEdit, QMessageBox, QWidget
 
+from signa.core import rules
+
 from ..widgets import Card, Segmented, Toggle, button, columns, hbox, label, section, tag, vbox, widget
 from .base import Page
+from .rules_ui import RulesEditor, ui_rules
 
 TOGGLES = [
     ("auto_buy", "Auto buy", "Buys as soon as the call arrives. Off: you get a card to buy."),
@@ -19,7 +22,7 @@ TOGGLES = [
 SIZE_LABEL = {"contracts": ("Contracts", "contracts", ""), "amount": ("Amount per trade", "amount", "$"),
               "pct": ("Account per trade", "pct", "%")}
 SAVED_FIELDS = ("followed", "account", "auto_buy", "auto_protect", "auto_rules", "all_msgs", "size_by", "contracts",
-                "amount", "pct", "stop_pct", "chase_pct", "hours_from", "hours_to")
+                "amount", "pct", "stop_pct", "chase_pct", "hours_from", "hours_to", "rules")
 SAVED_MSG_MS = 4000
 
 
@@ -40,10 +43,27 @@ def _fmt(v) -> str:
     return "" if v is None else f"{float(v):g}"
 
 
+def rules_snapshot(p: dict):
+    """Sus reglas como se guardan (solo lo distinto de Signa). Lo mal escrito, tal cual: cuenta como cambio y al
+    guardar sale el error."""
+    try:
+        return rules.normalize(p.get("rules_ui") or ui_rules(p))
+    except rules.RuleError:
+        return {"invalid": repr(p.get("rules_ui"))}
+
+
 def snapshot(p: dict) -> dict:
-    """Los ajustes que se guardan, normalizados para poder comparar (2 == 2.0, «09:30:00» == «09:30»)."""
+    """Los ajustes que se guardan, normalizados para poder comparar (2 == 2.0, «09:30:00» == «09:30»). Con reglas
+    editables, el «Max chase» de antes va dentro de su regla (chase_pct vacío)."""
     out = {}
+    with_rules = rules.has_rules(p.get("id", ""))
     for k in SAVED_FIELDS:
+        if k == "rules":
+            out[k] = rules_snapshot(p) if with_rules else (p.get("rules") or {})
+            continue
+        if k == "chase_pct" and with_rules:
+            out[k] = None
+            continue
         v = None if k == "contracts" and p.get("contracts_default") else p.get(k)  # vacío = el del proveedor
         if k in ("contracts", "amount", "pct", "stop_pct", "chase_pct") and v is not None:
             v = float(v)
@@ -104,7 +124,7 @@ class ProvidersScreen(Page):
 
     # --- datos desde el servidor -----------------------------------------------------------------
     def set_providers(self, providers: list[dict]):
-        self.providers = [dict(p) for p in providers]
+        self.providers = [self._with_rules(dict(p)) for p in providers]
         self.stored = {p["id"]: snapshot(p) for p in providers}
         if not any(p["id"] == self.sel for p in self.providers):
             self.sel = self.providers[0]["id"] if self.providers else None
@@ -113,7 +133,7 @@ class ProvidersScreen(Page):
     def saved(self, res: dict):
         self.saving = False
         if res.get("ok"):
-            p = dict(res["provider"])
+            p = self._with_rules(dict(res["provider"]))
             self.providers = [p if x["id"] == p["id"] else x for x in self.providers]
             self.stored[p["id"]] = snapshot(p)
             self._render()
@@ -121,6 +141,12 @@ class ProvidersScreen(Page):
         else:
             self._update_dirty()
             self._message(res.get("error") or "Couldn't save. Try again.", "bad")
+
+    @staticmethod
+    def _with_rules(p: dict) -> dict:
+        if rules.has_rules(p.get("id", "")):
+            p["rules_ui"] = ui_rules(p)  # las completas, que edita la pantalla
+        return p
 
     # --- montaje ---------------------------------------------------------------------------------
     def _render(self):
@@ -131,6 +157,8 @@ class ProvidersScreen(Page):
                 w.hide()  # que no se vea ni un instante debajo de la nueva
                 w.deleteLater()
         self.prov = next((p for p in self.providers if p["id"] == self.sel), None)
+        self.editor = (RulesEditor(self.prov, self._rules_changed)
+                       if self.prov is not None and "rules_ui" in self.prov else None)
         if self.prov is None:
             msg = "Connecting to the Signa server…" if not self.providers and self.sel is None else \
                 "No providers enabled for your account yet. Ask your admin."
@@ -195,6 +223,8 @@ class ProvidersScreen(Page):
             t = Toggle(self.prov[key], title)
             t.toggled.connect(lambda on, k=key: self._set(k, on))
             card.add_row(title, desc, t)
+            if self.editor and any(r["group"] == key for r in rules.SCHEMA.values()):
+                card.add(self.editor.group(key, bool(self.prov[key])))  # sus reglas, debajo y hacia dentro
         return card
 
     def _sizing(self) -> QWidget:
@@ -214,8 +244,14 @@ class ProvidersScreen(Page):
         self.chase_field.setPlaceholderText(f"Default ({_fmt(d['chase'])} %)" if d.get("chase") is not None
                                             else "Default (his rule)")
         card.add_row("Initial stop", "Below your entry · empty = the provider's strategy", self.stop_field)
-        card.add_row("Max chase", "Skip if the ask is this much higher · empty = the provider's strategy",
-                     self.chase_field)
+        if self.editor:  # la misma regla que Auto buy › Don't chase (para quien no compra solo)
+            row = QFrame()
+            row.setProperty("row", "true")
+            row.setLayout(vbox(self.editor.chase_row()))
+            card.add(row)
+        else:
+            card.add_row("Max chase", "Skip if the ask is this much higher · empty = the provider's strategy",
+                         self.chase_field)
         self.from_field = _field(str(p["hours_from"])[:5], 64)
         self.to_field = _field(str(p["hours_to"])[:5], 64)
         card.add_row("Trading hours (ET)", None,
@@ -261,7 +297,8 @@ class ProvidersScreen(Page):
         else:
             p[field] = size
         p["stop_pct"] = _num(self.stop_field.text())
-        p["chase_pct"] = _num(self.chase_field.text())
+        if not self.editor:
+            p["chase_pct"] = _num(self.chase_field.text())
         p["hours_from"], p["hours_to"] = self.from_field.text().strip(), self.to_field.text().strip()
         self.msg_timer.stop()
         self._update_dirty()
@@ -299,6 +336,13 @@ class ProvidersScreen(Page):
     def _set(self, key: str, on: bool):
         self.prov[key] = on
         self.msg_timer.stop()
+        if self.editor and any(r["group"] == key for r in rules.SCHEMA.values()):
+            self._render()  # su aviso de «Off: …» encima de sus reglas
+            return
+        self._update_dirty()
+
+    def _rules_changed(self):
+        self.msg_timer.stop()
         self._update_dirty()
 
     def _set_size_by(self, key: str):
@@ -324,6 +368,7 @@ class ProvidersScreen(Page):
         """Vuelve a lo guardado en el servidor."""
         stored = self.stored.get(self.prov["id"], {})
         self.prov.update({k: v for k, v in stored.items()})
+        self._with_rules(self.prov)
         self.msg_timer.stop()
         self._render()
 
@@ -334,6 +379,12 @@ class ProvidersScreen(Page):
     def _save(self):
         if self.prov is None or not self.is_dirty():
             return
+        if self.editor:
+            try:
+                self.editor.stored()
+            except rules.RuleError as e:
+                self._message(f"Check the rules: {e}", "bad")
+                return
         self.saving = True
         self.msg_timer.stop()
         self._update_dirty()

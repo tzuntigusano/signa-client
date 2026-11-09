@@ -130,6 +130,14 @@ QFrame#Seg {{ border: 1px solid {c['line2']}; border-radius: 6px; background: {c
 QLineEdit, QComboBox {{ background: {c['card']}; border: 1px solid {c['line2']}; border-radius: 6px; padding: 0 10px; min-height: 30px; selection-background-color: {c['acbg']}; selection-color: {c['tx']}; }}
 QLineEdit:focus, QComboBox:focus {{ border-color: {c['ac']}; }}
 QLineEdit[mono="true"] {{ font-family: "{mono}"; }}
+QLineEdit[changed="true"] {{ border-color: {c['ac']}; background: {c['acbg']}; color: {c['ac']}; font-weight: 600; }}
+QLineEdit:disabled {{ color: {c['mu']}; background: {c['sub']}; }}
+QLineEdit[rule="true"] {{ padding: 0 6px; min-height: 24px; }}
+QFrame[kids="true"] {{ border: none; border-left: 2px solid {c['line']}; background: transparent; }}
+QLabel[role="offnote"] {{ color: {c['warn']}; background: {c['warnbg']}; border-radius: 6px; padding: 6px 10px; font-size: 9pt; }}
+QLabel[role="rule"] {{ font-size: 9.5pt; }}
+QLabel[role="rule"]:disabled {{ color: {c['mu']}; }}
+QPushButton[kind="reset"] {{ background: transparent; border: none; color: {c['ac']}; font-weight: 600; font-size: 9pt; padding: 0 4px; min-height: 22px; }}
 QComboBox::drop-down {{ border: 0; width: 26px; }}
 QComboBox::down-arrow {{ image: url("{chevron(c['mu'])}"); width: 10px; height: 10px; }}
 QComboBox QAbstractItemView {{ background: {c['card']}; border: 1px solid {c['line2']}; selection-background-color: {c['acbg']}; selection-color: {c['tx']}; }}
