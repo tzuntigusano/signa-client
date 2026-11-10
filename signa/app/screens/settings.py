@@ -219,6 +219,9 @@ class SettingsScreen(Page):
         if self.latest and version_tuple(self.latest) > version_tuple(__version__):
             go = self.install_btn = button(f"Install v{self.latest}", "primary")
             go.clicked.connect(lambda: self._update(go))
+            if getattr(self, "_installing", False):  # (10/11, Mac de paula) el repintado de cada minuto la volvía a
+                go.setEnabled(False)                  # dejar pulsable a media descarga: 2 descargas, 1 fichero
+                go.setText("Downloading…")
             self.updates.add_row("Update", "Signed by Signa and checked before installing. Signa closes for a "
                                  "moment and opens again on the new version.", go)
 
@@ -246,20 +249,24 @@ class SettingsScreen(Page):
             self._install(self.install_btn)
 
     def _install(self, btn):
+        if getattr(self, "_installing", False):
+            return  # ya hay una descarga en marcha
+        self._installing = True
         btn.setEnabled(False)
         btn.setText("Downloading…")
 
         def done(path, err):
             if err:
-                btn.setEnabled(True)
-                btn.setText(f"Install v{self.latest}")
+                self._installing = False
+                self._paint_updates()  # el botón de ahora (el de antes puede haberse repintado)
                 QMessageBox.warning(self, "Update Signa", err)
                 return
             try:
                 updater.install(path)
             except updater.UpdateError as e:
+                self._installing = False
+                self._paint_updates()
                 QMessageBox.warning(self, "Update Signa", str(e))
-                btn.setEnabled(True)
                 return
             self.update_ready.emit()  # la app se cierra y el instalador la vuelve a abrir
         self._job(updater.download_and_check, then=done)

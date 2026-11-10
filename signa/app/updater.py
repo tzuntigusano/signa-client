@@ -49,15 +49,17 @@ def download_and_check() -> Path:
     m = entry(manifest())
     if m is None:
         raise UpdateError("There's no update for this computer yet.")
-    path = Path(tempfile.gettempdir()) / m["file"]
+    # (10/11, Mac de paula) cada descarga en SU carpeta: dos a la vez en el mismo fichero se pisaban y una borraba el
+    # de la otra («[Errno 2] No such file … Signa-mac-arm64-0.1.30.zip»). El nombre del fichero no cambia
+    path = Path(tempfile.mkdtemp(prefix="signa-update-")) / m["file"]
     try:
         with urllib.request.urlopen(link.url(f"/download/{m['file']}", ws=False), context=link.ssl_context(),
                                     timeout=300) as r, open(path, "wb") as f:
             while chunk := r.read(1 << 20):
                 f.write(chunk)
+        why = release.check_file(path, m)
     except OSError as e:
         raise UpdateError("The download didn't finish. Try again.") from e
-    why = release.check_file(path, m)
     if why:
         path.unlink(missing_ok=True)
         raise UpdateError(f"Not installed: {why}.")
