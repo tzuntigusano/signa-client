@@ -22,6 +22,8 @@ import aiohttp
 from signa.core import link
 from signa.core.logs import Log, single_instance
 
+from .dedupe import Dedupe
+from .dom import DomReader
 from .notifications import Notice, NotPermitted, listen
 from .outbox import Outbox
 from .recorder import Recorder
@@ -52,11 +54,23 @@ def notice_ref(notif_id: int, at) -> str:
     return f"n{notif_id}-{at.astimezone(timezone.utc):%Y%m%d}"
 
 
-def match(cfg: dict, n: Notice) -> str | None:
-    """¿De qué proveedor es esta notificación? (None = de nadie: se ignora y NO sale del PC)."""
+# Discord abierto en un NAVEGADOR (Ivan 11/11/2026): la app de escritorio no avisa con su ventana activa ni del canal
+# que tienes abierto, y así se perdieron dos calls de Hacedor. Discord web en Edge minimizado avisa SIEMPRE, con el
+# mismo título y texto. Se leen los dos; el servidor cuenta cada mensaje una vez (notices.py, fuente «web»)
+BROWSERS = ("microsoft edge", "google chrome", "chrome", "brave", "firefox", "opera")
+
+
+def match(cfg: dict, n: Notice) -> tuple[str, str] | None:
+    """(proveedor, fuente «pc» | «web») de esta notificación, o None (de nadie: se ignora y NO sale del PC)."""
+    app = n.app.lower()
+    web = any(app.startswith(b) for b in BROWSERS)
     for s in cfg.get("sources", []):
-        if s.get("app", "").lower() in n.app.lower() and s["_ch"].search(n.channel) and s["_sv"].search(n.server):
-            return s["provider"]
+        if not (s["_ch"].search(n.channel) and s["_sv"].search(n.server)):
+            continue
+        if s.get("app", "").lower() in app:
+            return s["provider"], "pc"
+        if web and s.get("web", True):
+            return s["provider"], "web"
     return None
 
 
@@ -66,18 +80,32 @@ class Agent:
         self.outbox = Outbox(HOME / "agent_outbox.db")
         self.ws: aiohttp.ClientWebSocketResponse | None = None
         self.wake = asyncio.Event()
+        self.dedupe = Dedupe()  # app de Discord + Discord web: el mismo mensaje sale UNA vez
         rc = cfg.get("recorder")  # {"port": 4002, "client_id": 91}: grabar precios con el IB Gateway de este PC
         self.recorder = Recorder(self._send_now, rc.get("port", 4002), rc.get("client_id", 91)) if rc else None
+        # canales leídos de una ventana de Discord en Edge (tarjetas de bot que el aviso de Windows no trae: Namrood)
+        self.doms = [DomReader(d, self.from_dom, log) for d in cfg.get("dom", [])]
+
+    async def from_dom(self, provider: str, msg_id: str, author: str, text: str, at: str):
+        ref = f"d{msg_id}"  # el id del mensaje de Discord: estable, el servidor no lo repite aunque llegue otra vez
+        self.outbox.put(ref, {"type": "notification", "provider": provider, "text": text, "ts": at or None,
+                              "ref": ref, "source": "dom"})
+        log(f"{provider} (window): {' '.join(text.split())[:70]!r} ({len(self.outbox)} pending)")
+        self.wake.set()
 
     async def read(self):
         async for n in listen():
-            provider = match(self.cfg, n)
-            if not provider or not n.text:
+            m = match(self.cfg, n)
+            if not m or not n.text:
+                continue
+            provider, source = m
+            if self.dedupe.seen(provider, n.text, source, n.at.timestamp()):
+                log(f"{provider}: {n.text[:50]!r} already sent from the other source")
                 continue
             ref = notice_ref(n.id, n.at)
             self.outbox.put(ref, {"type": "notification", "provider": provider, "text": n.text,
-                                  "ts": n.at.isoformat(timespec="milliseconds"), "ref": ref})
-            log(f"{provider}: {n.text[:70]!r} ({len(self.outbox)} pending)")
+                                  "ts": n.at.isoformat(timespec="milliseconds"), "ref": ref, "source": source})
+            log(f"{provider}{' (web)' if source == 'web' else ''}: {n.text[:70]!r} ({len(self.outbox)} pending)")
             self.wake.set()
 
     async def send(self):
@@ -134,7 +162,8 @@ class Agent:
             await self.ws.send_json(body)
 
     async def run(self):
-        await asyncio.gather(self.read(), self.send(), *([self.recorder.run()] if self.recorder else []))
+        await asyncio.gather(self.read(), self.send(), *([self.recorder.run()] if self.recorder else []),
+                             *(d.run() for d in self.doms))
 
 
 async def check(cfg: dict):

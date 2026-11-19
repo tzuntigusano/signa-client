@@ -8,8 +8,8 @@ queda como tu take profit). No decide nada: manda lo que pulsas y enseña lo que
 import re
 
 from PySide6.QtCore import QRect, Qt, QTimer, Signal
-from PySide6.QtWidgets import (QFrame, QGridLayout, QLineEdit, QMessageBox, QScrollArea, QSizePolicy, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QComboBox, QFrame, QGridLayout, QLineEdit, QMessageBox, QScrollArea, QSizePolicy,
+                               QVBoxLayout, QWidget)
 
 from .. import theme
 from ..widgets import Segmented, button, hbox, label, provider_chip, tag, vbox, widget
@@ -77,8 +77,10 @@ class TradeDrawer(QWidget):
         self.note_text = ""
 
     # --- abrir / cerrar ---------------------------------------------------------------------------
-    def open(self, trade: dict, provider_name: str):
+    def open(self, trade: dict, provider_name: str, rule_sources: list[tuple[str, str]] | None = None):
+        """rule_sources: (id, nombre) de los proveedores cuyas reglas se le pueden poner (solo a My calls)."""
         self.trade, self.name, self.quote, self.note_text = trade, provider_name, None, ""
+        self.rule_sources = rule_sources or []
         self.waiting = self.busy = False
         c = theme.current
         self.setStyleSheet("QWidget#DrawerShade { background: rgba(0, 0, 0, 0.35); }")
@@ -191,7 +193,7 @@ class TradeDrawer(QWidget):
             note.setTextInteractionFlags(Qt.TextSelectableByMouse)
             lay.addWidget(note)
         if is_open:
-            lay.addWidget(self._rules_card())
+            lay.addWidget(self._adopt_card() if t["provider_id"] == "mine" else self._rules_card())
             lay.addWidget(self._sell_card(q.get("held") or t.get("held") or 0))
             lay.addWidget(self._level_card("stop", q))
             lay.addWidget(self._level_card("tp", q))
@@ -311,6 +313,40 @@ class TradeDrawer(QWidget):
         body = label("Your stop loss, take profit and other orders are cancelled; the strategy's own take over.",
                      "small", wrap=True)
         return self._card("Signa's rules", body, go)
+
+    def _adopt_card(self) -> QFrame:
+        """(Ivan 10/11) My calls › «Rules from»: tu call pasa a las reglas de un proveedor que sigues en esa cuenta
+        (fuera tus órdenes; su SL, su TP si lo lleva, y sus reglas desde ahora)."""
+        if not self.rule_sources:
+            body = label("To manage this call with a provider's rules, follow that provider in Providers on the same "
+                         "account (Hacedor, PipoSavage, Imperio or Edwards).", "small", wrap=True)
+            return self._card("Provider rules", body)
+        pick = QComboBox()
+        for pid, name in self.rule_sources:
+            pick.addItem(name, pid)
+        go = button("Apply", "primary")
+        go.setToolTip("Cancel this call's orders in IBKR and let that provider's rules manage it from now")
+
+        def ask():
+            name = pick.currentText()
+            box = QMessageBox(self)
+            box.setWindowTitle("Provider rules")
+            box.setIcon(QMessageBox.Question)
+            box.setText(f"Manage this call with {name}'s rules?")
+            box.setInformativeText(f"Signa cancels your stop loss, take profit and other orders of this call in IBKR, "
+                                   f"waits until IBKR confirms it, and then {name}'s strategy takes over from now: "
+                                   f"its stop loss, its take profit if it has one, and its rules. The call moves to "
+                                   f"{name} in Trades.")
+            yes = box.addButton("Apply", QMessageBox.AcceptRole)
+            box.addButton("Cancel", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is yes:
+                self._send("adopt_rules", {"provider": pick.currentData()})
+        go.clicked.connect(ask)
+        body = vbox(label("Your orders are cancelled and the provider's strategy manages this call from now. Rules "
+                          "that need his messages (his sells, his warnings) don't apply.", "small", wrap=True),
+                    hbox(label("Rules from", "small"), pick, None, spacing=8), spacing=8)
+        return self._card("Provider rules", widget(body), go)
 
     def _sell_card(self, held: int) -> QFrame:
         step = Stepper(1, max(1, held), max(1, held))

@@ -10,8 +10,8 @@ import time
 from signa.core import runtime
 from signa.core.logs import Log, single_instance
 
-from . import ACCOUNTS, GatewayError, command_line, credentials, install, new_session, next_step, port_open, \
-    restart_option, revive, settings_dir, stop_flag, write_config
+from . import ACCOUNTS, GatewayError, command_line, credentials, install, kill_orphans, new_session, next_step, \
+    port_open, restart_option, revive, revive_wait, settings_dir, stop_flag, write_config
 
 MAX_RELOGINS = 10  # reintentos seguidos con login (2FA sin aprobar…): no avisar al móvil eternamente
 LOGIN_WAIT = 180  # s: lo más que se dejan las credenciales en el config.ini esperando a que entre
@@ -38,11 +38,17 @@ def main(account: str) -> int:
     settings = settings_dir(account)
     stop_flag(account).unlink(missing_ok=True)  # una marca vieja (un STOP que no llegó a cerrarlo) no cuenta
     session = new_session()
-    relogins, cold = 0, False
+    relogins, cold, closes = 0, False, []
     out = (log.path.parent / f"gateway-{account}.java.log").open("a", encoding="utf-8", errors="ignore")
     while True:
         opt, _ = (None, False) if cold else restart_option(settings)
         cold = False
+        try:  # un Gateway de esa cuenta que no es el nuestro (huérfano): fuera antes de lanzar el nuestro
+            if gone := kill_orphans(account):
+                say(f"closed {len(gone)} leftover Gateway process(es) of this account (pid {gone}): two Gateways "
+                    "with the same user keep logging each other out")
+        except Exception as e:
+            say(f"couldn't check for leftover Gateways: {type(e).__name__}: {e}")
         say(f"starting IB Gateway {gw.name} with IBC" + (f" ({opt}: no login needed)" if opt else ""))
         creds = credentials(account)  # se releen: si las cambias en la app, el próximo login ya usa las nuevas
         if creds is None:
@@ -61,9 +67,13 @@ def main(account: str) -> int:
             write_config(account)  # dentro (o ya fuera): sin credenciales en el disco
         code = proc.wait()
         step = next_step(code, settings, session)
+        wait = 2
         if step is None and revive(account):
             step = "restart"
-            say(f"Gateway closed by itself during market hours (code {code}) -> starting it again")
+            now = time.monotonic()
+            closes = [t for t in closes if now - t <= 600] + [now]
+            wait = revive_wait(closes, now)
+            say(f"Gateway closed by itself during market hours (code {code}) -> starting it again in {wait} s")
         else:
             say(f"Gateway exited (code {code}) -> {step or 'stop'}")
         if step is None:
@@ -76,7 +86,7 @@ def main(account: str) -> int:
         else:
             relogins = 0
         cold = step == "cold"
-        time.sleep(2)
+        time.sleep(wait)
 
 
 if __name__ == "__main__":

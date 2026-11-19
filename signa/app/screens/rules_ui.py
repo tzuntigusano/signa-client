@@ -22,6 +22,8 @@ TEXT = {
              "ignored and the stop decides.", {"ref": "%", "sl": "%"}),
     "tp1": ("Partial take profit", "At +{pct} sell {frac} of the contracts once. The rest gets its stop at "
             "break-even.", {"pct": "%", "frac": ""}),
+    "tp2": ("Second partial take profit", "After the first one, at +{pct} sell {frac} of what is left once. The "
+            "rest keeps its stop at break-even.", {"pct": "%", "frac": ""}),
     "double": ("Early double", "If it reaches +{pct} before the time check, the stop trails {trail} below the high.",
                {"pct": "%", "trail": "%"}),
     "time": ("Time check", "At minute {hold}: out if it is under +{floor}. Above it, the stop trails {trail} below "

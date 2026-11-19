@@ -512,7 +512,12 @@ class MainWindow(QMainWindow):
             return
         name = next((p["name"] for p in self.state["providers"] if p["id"] == t["provider_id"]),
                     "My calls" if t["provider_id"] == "mine" else t["provider_id"])
-        self.drawer.open(t, name)
+        # (Ivan 10/11) a una call tuya se le pueden poner las reglas de un proveedor que sigues en esa misma cuenta
+        acct = t.get("account") or "paper"
+        sources = [(p["id"], p["name"]) for p in self.state["providers"]
+                   if t["provider_id"] == "mine" and p.get("followed") and (p.get("account") or "paper") == acct
+                   and p["id"] not in ("mine", "wsn")]
+        self.drawer.open(t, name, sources)
 
     def _trade_quote(self, ref: str):
         if self.demo is not None:

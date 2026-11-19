@@ -30,6 +30,10 @@ SCHEMA: dict[str, dict] = {
              "fields": {"ref": (100.0, "pct", 1, 1000), "sl": (30.0, "pct", 1, 99)}},
     "tp1": {"group": "auto_rules", "on": True,
             "fields": {"pct": (25.0, "pct", 1, 1000), "frac": ("2/3", "frac", None, None)}},
+    # la SEGUNDA venta parcial (Ivan 17/11, Harvey): tras el TP1, a +pct se vende «frac» de lo que quede, una vez; el
+    # resto sigue con el stop en break-even. Apagada por defecto (Hacedor: una sola venta parcial)
+    "tp2": {"group": "auto_rules", "on": False,
+            "fields": {"pct": (50.0, "pct", 1, 1000), "frac": ("1/2", "frac", None, None)}},
     "double": {"group": "auto_rules", "on": True,
                "fields": {"pct": (100.0, "pct", 1, 1000), "trail": (30.0, "pct", 1, 99)}},
     "time": {"group": "auto_rules", "on": True,

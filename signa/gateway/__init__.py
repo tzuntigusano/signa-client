@@ -318,6 +318,33 @@ def processes(account: str) -> list:
     return out
 
 
+def kill_orphans(account: str) -> list[int]:
+    """(Paula 19/11) Gateways de esa cuenta que siguen vivos ANTES de que el supervisor lance el suyo: huérfanos de
+    un supervisor que murió (Signa cerrado de golpe, una actualización…). Con «ExistingSessionDetectedAction=primary»
+    dos Gateways del mismo usuario se echan el uno al otro sin fin: «No market data during competing live session»
+    todo el día y, al reiniciar, el nuevo se cerraba cada pocos segundos. Se cierran (el supervisor es el único que
+    lanza el de Signa y aún no lo ha hecho). Devuelve sus pid."""
+    import psutil
+    procs = processes(account)
+    for p in procs:
+        try:
+            for c in p.children(recursive=True):
+                c.kill()
+            p.kill()
+        except psutil.Error:
+            pass
+    psutil.wait_procs(procs, timeout=10)
+    return [p.pid for p in procs]
+
+
+def revive_wait(closes: list[float], now: float) -> float:
+    """Cuánto esperar antes de volver a lanzar un Gateway que se ha cerrado SOLO, según cuántas veces lo ha hecho en
+    los últimos 10 min (`closes`, monotonic): 2 s la 1ª, luego 15 s, 60 s y 5 min. Antes era siempre 2 s: el 19/11
+    el de Paula entró en un bucle de 18 logins en minuto y medio (IBKR puede bloquear el usuario por eso)."""
+    recent = [t for t in closes if now - t <= 600]
+    return (2, 15, 60, 300)[min(len(recent), 4) - 1] if recent else 2
+
+
 def supervisor_running(account: str) -> bool:
     from ..core.logs import is_running
     return is_running(ACCOUNTS[account]["lock"])
