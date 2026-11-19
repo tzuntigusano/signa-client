@@ -22,7 +22,7 @@ TOGGLES = [
 SIZE_LABEL = {"contracts": ("Contracts", "contracts", ""), "amount": ("Amount per trade", "amount", "$"),
               "pct": ("Account per trade", "pct", "%")}
 SAVED_FIELDS = ("followed", "account", "auto_buy", "auto_protect", "auto_rules", "all_msgs", "size_by", "contracts",
-                "amount", "pct", "stop_pct", "chase_pct", "hours_from", "hours_to", "rules")
+                "amount", "pct", "stop_pct", "chase_pct", "chase_wait", "hours_from", "hours_to", "rules")
 SAVED_MSG_MS = 4000
 
 
@@ -65,7 +65,7 @@ def snapshot(p: dict) -> dict:
             out[k] = None
             continue
         v = None if k == "contracts" and p.get("contracts_default") else p.get(k)  # vacío = el del proveedor
-        if k in ("contracts", "amount", "pct", "stop_pct", "chase_pct") and v is not None:
+        if k in ("contracts", "amount", "pct", "stop_pct", "chase_pct", "chase_wait") and v is not None:
             v = float(v)
         elif k in ("hours_from", "hours_to") and v:
             v = str(v)[:5]
@@ -252,11 +252,17 @@ class ProvidersScreen(Page):
         else:
             card.add_row("Max chase", "Skip if the ask is this much higher · empty = the provider's strategy",
                          self.chase_field)
+        # «Wait for his price» (19/11): entrada descartada por cara -> mira el ask cada segundo esos segundos y compra
+        # si toca su precio exacto. Vacío = lo del proveedor; 0 = no esperar
+        self.wait_field = _field(f"{p['chase_wait']} s" if p.get("chase_wait") is not None else "")
+        self.wait_field.setPlaceholderText(f"Default ({d.get('wait') or 0} s)")
+        card.add_row("Wait for his price", "If a buy is skipped because the ask is too high, keep watching it for "
+                     "this many seconds and buy if it touches his exact price · 0 = don't wait", self.wait_field)
         self.from_field = _field(str(p["hours_from"])[:5], 64)
         self.to_field = _field(str(p["hours_to"])[:5], 64)
         card.add_row("Trading hours (ET)", None,
                      widget(hbox(self.from_field, label("–", "mu"), self.to_field, spacing=6)))
-        for f in (self.size_field, self.stop_field, self.chase_field, self.from_field, self.to_field):
+        for f in (self.size_field, self.stop_field, self.chase_field, self.wait_field, self.from_field, self.to_field):
             f.textEdited.connect(lambda _t: self._read_fields())
         return card
 
@@ -299,6 +305,8 @@ class ProvidersScreen(Page):
         p["stop_pct"] = _num(self.stop_field.text())
         if not self.editor:
             p["chase_pct"] = _num(self.chase_field.text())
+        w = _num(self.wait_field.text())
+        p["chase_wait"] = None if w is None else int(w)
         p["hours_from"], p["hours_to"] = self.from_field.text().strip(), self.to_field.text().strip()
         self.msg_timer.stop()
         self._update_dirty()

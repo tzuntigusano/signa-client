@@ -154,12 +154,16 @@ def channel_path(url: str) -> str:
 
 
 class DomReader:
-    """Una ventana / un canal. on_message(provider, msg_id, author, text, iso_ts) por cada mensaje nuevo."""
+    """Una pestaña / un canal. on_message(provider, msg_id, author, text, iso_ts) por cada mensaje nuevo. (19/11,
+    Swift) Varios canales con el MISMO puerto y perfil = una sola ventana de Edge con una PESTAÑA por canal: cada
+    lector busca la suya y, si no está, abre otra (nunca se lleva la de otro canal)."""
+    claimed: set[str] = set()  # los canales de todos los lectores
 
     def __init__(self, cfg: dict, on_message: Callable[..., Awaitable[None]], log: Callable[[str], None]):
         self.provider = cfg["provider"]
         self.url = cfg["url"]
         self.path = channel_path(self.url)
+        DomReader.claimed.add(self.path)
         self.port = int(cfg.get("port") or DEFAULT_PORT)
         self.profile = expand(cfg.get("profile") or DEFAULT_PROFILE)
         self.on_message = on_message
@@ -225,10 +229,20 @@ class DomReader:
         for p in pages:
             if self.path in p.get("url", ""):
                 return p
+        others = DomReader.claimed - {self.path}
         for p in pages:
-            if "discord.com" in p.get("url", ""):
-                return p  # otra página de Discord: se lleva al canal al conectar
-        raise RuntimeError(f"no Discord page in the reader window ({[p.get('url') for p in pages]})")
+            url = p.get("url", "")
+            if "discord.com" in url and not any(o in url for o in others):
+                return p  # otra página de Discord (no la de otro lector): se lleva al canal al conectar
+        try:  # la ventana es de otros canales: una pestaña nueva para este
+            async with s.put(f"http://127.0.0.1:{self.port}/json/new?{self.url}",
+                             timeout=aiohttp.ClientTimeout(total=10)) as r:
+                p = await r.json(content_type=None)
+            self.log(f"{self.provider}: opened a new tab for {self.path} in the Discord reader window")
+            await asyncio.sleep(5)  # que Discord cargue
+            return p
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as e:
+            raise RuntimeError(f"no Discord page in the reader window and no new tab ({e})") from None
 
     # --- la conexión con la página
     async def _cmd(self, ws, method: str, **params) -> dict:
