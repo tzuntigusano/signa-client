@@ -292,6 +292,13 @@ class MyCallsScreen(Page):
         self.from_saved = False
         self._paint()
 
+    def connection_lost(self):
+        """Se cortó la conexión con el servidor: lo que esperaba respuesta se suelta (al volver, precios otra vez)."""
+        self.waiting = False
+        if self.busy:
+            self.set_result(False, "Lost the connection to the Signa server while buying: check Trades before "
+                                   "trying again (it may have been bought).")
+
     @staticmethod
     def _say(lb, text: str, tone: str):
         lb.setText(text)

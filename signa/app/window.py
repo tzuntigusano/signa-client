@@ -100,6 +100,8 @@ class MainWindow(QMainWindow):
         self._paint_status()
         if self.screens:
             self.screens["overview"].set_data(status=st)
+            if st != "online":  # su respuesta ya no llegará: ni «Sending…» eterno ni precios parados (20/11)
+                self.screens["mycalls"].connection_lost()
         if st == "rejected" and not self.key_offered and self.demo is None:
             self.key_offered = True  # una vez por sesión (también está en Settings › Invite key)
             self._new_key(rejected=True)
