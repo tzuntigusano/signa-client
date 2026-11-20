@@ -5,7 +5,9 @@ Gateway seguía «abierta» pero no contestaba nada; cada compra esperaba hasta 
              Gateway contesta al momento hasta en paper). Si falla PING_STRIKES veces seguidas, la conexión está
              muerta: se cierra y se reconecta. NO pone límite a las órdenes ni a los precios (en paper tardan).
   Awake      en Mac, durante el horario del mercado (con margen), que el Mac no se duerma por inactividad mientras
-             Signa esté abierta (`caffeinate -i`, como el propio macOS). Fuera de horario, nada.
+             Signa esté abierta (`caffeinate -i`, como el propio macOS). Fuera de horario, nada. En WINDOWS (Ivan
+             20/11, para dejar el PC solo en vacaciones) lo mismo con SetThreadExecutionState: solo frena la
+             suspensión POR INACTIVIDAD; suspenderlo a propósito (una tarea programada, el botón) sigue funcionando.
 """
 import asyncio
 import subprocess
@@ -59,17 +61,41 @@ def awake_hours(now: datetime | None = None) -> bool:
     return now.weekday() < 5 and AWAKE_FROM <= now.time() < AWAKE_TO
 
 
-class Awake:
-    """Mac: `caffeinate -i -w <pid de Signa>` mientras sea horario de mercado (se acaba solo si Signa se cierra)."""
+ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
 
-    def __init__(self, log, platform: str = sys.platform, spawn=subprocess.Popen):
-        self.log, self.on, self.spawn = log, platform == "darwin", spawn
+
+def _win_state(flags: int) -> int:
+    import ctypes
+    return ctypes.windll.kernel32.SetThreadExecutionState(flags)
+
+
+class Awake:
+    """Mac: `caffeinate -i -w <pid de Signa>` mientras sea horario de mercado (se acaba solo si Signa se cierra).
+    Windows: SetThreadExecutionState(ES_SYSTEM_REQUIRED) desde el hilo del bucle (dura mientras viva el proceso)."""
+
+    def __init__(self, log, platform: str = sys.platform, spawn=subprocess.Popen, win_state=_win_state):
+        self.log, self.on, self.spawn = log, platform in ("darwin", "win32"), spawn
+        self.win, self.win_state, self.win_awake = platform == "win32", win_state, False
         self.proc = None
 
     def tick(self, now: datetime | None = None, pid: int | None = None):
         if not self.on:
             return
         want = awake_hours(now)
+        if self.win:
+            if want != self.win_awake:
+                try:
+                    ok = self.win_state(ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if want else 0))
+                except Exception as e:
+                    ok = 0
+                    self.log(f"keep awake: {type(e).__name__}: {e}")
+                if not ok:
+                    self.on = False
+                    return
+                self.win_awake = want
+                self.log("market hours: keeping this PC awake while Signa is open" if want
+                         else "market closed: this PC can sleep again")
+            return
         alive = self.proc is not None and self.proc.poll() is None
         if want and not alive:
             import os

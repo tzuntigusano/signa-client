@@ -414,7 +414,7 @@ class Executor:
     async def run(self):
         asyncio.ensure_future(self.status_loop())
         asyncio.ensure_future(keepalive.watchdog(self, log))  # conexión con IBKR muerta sin cerrarse -> reconectar
-        asyncio.ensure_future(keepalive.Awake(log).run())  # Mac: no dormirse en horario de mercado
+        asyncio.ensure_future(keepalive.Awake(log).run())  # Mac/Windows: no dormirse en horario de mercado
         asyncio.ensure_future(self.watch_bots())
         asyncio.ensure_future(self.ticks())
         attempt, rejected = 0, False

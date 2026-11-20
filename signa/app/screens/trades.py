@@ -133,7 +133,8 @@ class TradesScreen(Page):
         self.qtimer.timeout.connect(self._ask_quotes)
         self.qtimer.start()
         self.period = "today"
-        self.seg = Segmented([("today", "Today"), ("week", "Last 7 days"), ("all", "All")], "today")
+        self.seg = Segmented([("today", "Today"), ("open", "Today · open"), ("week", "Last 7 days"),
+                               ("all", "All")], "today")
         self.seg.changed.connect(self._set_period)
         self.provider = ""  # "" = todos; si no, el id del proveedor (o "mine")
         self.prov = QComboBox()
@@ -199,7 +200,9 @@ class TradesScreen(Page):
                 continue
             if self.provider and t.get("provider_id") != self.provider:
                 continue
-            if self.period == "today" and d.date() != now.date():
+            if self.period in ("today", "open") and d.date() != now.date():
+                continue
+            if self.period == "open" and t["status"] not in ("open", "pending"):  # las vivas (y compras sin llenar)
                 continue
             if self.period == "week" and (now - d).days >= 7:
                 continue
@@ -224,7 +227,8 @@ class TradesScreen(Page):
         rows = self._visible()
         loose = self._loose_rows(rows)
         if not rows and not loose:
-            box = vbox(label("No trades yet" if not self.trades else "No trades in this period", "h2"),
+            empty = "No open trades today" if self.period == "open" else "No trades in this period"
+            box = vbox(label("No trades yet" if not self.trades else empty, "h2"),
                        label("Every order Signa places shows up here with its provider, prices, exit and P&L. Calls "
                              "it doesn't buy are listed too, with the reason.", "mu", wrap=True),
                        spacing=6, margins=(20, 20, 20, 20))
@@ -249,7 +253,7 @@ class TradesScreen(Page):
         data = []
         for t in rows:
             d = when(t.get("opened_at"))
-            stamp = "%H:%M" if self.period == "today" else "%b %d %H:%M"
+            stamp = "%H:%M" if self.period in ("today", "open") else "%b %d %H:%M"
             name = self.names.get(t["provider_id"], t["provider_id"])
             qty = t.get("qty") or 0
             held = t.get("held") or 0

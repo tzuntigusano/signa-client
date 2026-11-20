@@ -20,6 +20,8 @@ import json
 import os
 import subprocess
 from collections import OrderedDict
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -33,6 +35,25 @@ DEFAULT_PROFILE = r"%LOCALAPPDATA%\Signa\edge-discord"
 HEARTBEAT = 30      # s: el vigilante da señales de vida (y baja la lista al final) cada tanto
 DEAD_AFTER = 150    # s sin señales: se reconecta (y si no hay ventana, se abre)
 BINDING = "signaMsg"
+# HORARIO (Ivan 20/11): los lectores se paran a las 22:00 de España (cierran su pestaña; sin pestañas, la ventana se
+# cierra) y vuelven solos a las 9:00 de Nueva York, antes de la apertura. Solo de lunes a viernes (de Nueva York)
+NY, MADRID = ZoneInfo("America/New_York"), ZoneInfo("Europe/Madrid")
+START_NY = (9, 0)
+END_MADRID = (22, 0)
+
+
+def reading_hours(now: datetime | None = None) -> bool:
+    now = now or datetime.now(NY)
+    ny, md = now.astimezone(NY), now.astimezone(MADRID)
+    return ny.weekday() < 5 and (ny.hour, ny.minute) >= START_NY and (md.hour, md.minute) < END_MADRID
+
+
+def until_end(now: datetime | None = None) -> float:
+    """Segundos hasta las 22:00 de España de hoy (0 si ya han pasado)."""
+    now = now or datetime.now(NY)
+    md = now.astimezone(MADRID)
+    end = md.replace(hour=END_MADRID[0], minute=END_MADRID[1], second=0, microsecond=0)
+    return max(0.0, (end - md).total_seconds())
 
 # El vigilante (va DENTRO de la página de Discord). Manda cada mensaje del canal UNA vez: id, autor, texto (el del
 # mensaje + el de sus tarjetas) y hora. Al instalarse manda también los que ya están en pantalla (el servidor
@@ -228,16 +249,19 @@ class DomReader:
             pages = await self._pages(s) or []
         for p in pages:
             if self.path in p.get("url", ""):
+                self.tab = p.get("id")
                 return p
         others = DomReader.claimed - {self.path}
         for p in pages:
             url = p.get("url", "")
             if "discord.com" in url and not any(o in url for o in others):
+                self.tab = p.get("id")
                 return p  # otra página de Discord (no la de otro lector): se lleva al canal al conectar
         try:  # la ventana es de otros canales: una pestaña nueva para este
             async with s.put(f"http://127.0.0.1:{self.port}/json/new?{self.url}",
                              timeout=aiohttp.ClientTimeout(total=10)) as r:
                 p = await r.json(content_type=None)
+            self.tab = p.get("id")
             self.log(f"{self.provider}: opened a new tab for {self.path} in the Discord reader window")
             await asyncio.sleep(5)  # que Discord cargue
             return p
@@ -311,16 +335,34 @@ class DomReader:
             self.log(f"{self.provider}: could not load the card's image ({msg['img_error'][:120]})")
         await self.on_message(self.provider, mid, str(msg.get("author") or ""), text, str(msg.get("at") or ""))
 
+    async def close_tab(self, s: aiohttp.ClientSession):
+        tab, self.tab = getattr(self, "tab", None), None
+        if not tab:
+            return
+        try:
+            async with s.get(f"http://127.0.0.1:{self.port}/json/close/{tab}", timeout=aiohttp.ClientTimeout(total=5)):
+                pass
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+            self.log(f"{self.provider}: could not close its tab ({e})")
+
     async def run(self):
         wait = 2
         loop = asyncio.get_running_loop()
         async with aiohttp.ClientSession() as s:
             while True:
+                if not reading_hours():
+                    await asyncio.sleep(60)  # fuera de horario: ni ventana ni lectura
+                    continue
                 start = loop.time()
                 try:
-                    await self.session(s)
+                    await asyncio.wait_for(self.session(s), until_end() or 1)
                 except asyncio.CancelledError:
                     raise
+                except asyncio.TimeoutError:  # las 22:00 de España: fuera su pestaña hasta mañana
+                    await self.close_tab(s)
+                    self.log(f"{self.provider}: 22:00 in Spain: stopped reading the Discord window until "
+                             f"{START_NY[0]}:{START_NY[1]:02d} New York time")
+                    continue
                 except Exception as e:
                     if loop.time() - start > 300:
                         wait = 2  # llevaba rato bien: es un corte nuevo, no el mismo fallo repitiéndose
