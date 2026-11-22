@@ -21,7 +21,9 @@ from fractions import Fraction
 # mínimo, máximo). Tipos: pct (número), int (entero), frac («2/3»), time («15:55»)
 SCHEMA: dict[str, dict] = {
     "chase": {"group": "auto_buy", "on": True,
-              "fields": {"lo": (20.0, "pct", 0, 100), "hi": (10.0, "pct", 0, 100)}},
+              # (Ivan 22/11) 30 % en las dos franjas: con Hacedor, el +20 % / +10 % de antes se dejaba pelotazos (SPY
+              # 768C +23 % → +489 %; SPY 735P de 2,60 a +18 % → +523 %). trade-copier/reviews/hacedor_signa/chase.py
+              "fields": {"lo": (30.0, "pct", 0, 100), "hi": (30.0, "pct", 0, 100)}},
     "mismatch": {"group": "auto_buy", "on": True,
                  "fields": {"below": (50.0, "pct", 1, 99), "above": (80.0, "pct", 1, 500)}},
     # «1 contrato si duda»: apagado desde el 03/11 (siempre sus contratos); quien quiera, lo enciende
