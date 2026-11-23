@@ -38,7 +38,9 @@ SCHEMA: dict[str, dict] = {
             "fields": {"pct": (50.0, "pct", 1, 1000), "frac": ("1/2", "frac", None, None)}},
     "double": {"group": "auto_rules", "on": True,
                "fields": {"pct": (100.0, "pct", 1, 1000), "trail": (30.0, "pct", 1, 99)}},
-    "time": {"group": "auto_rules", "on": True,
+    # «Exit by time» (salir a los 90 min si no gana +20 %): APAGADA por defecto desde el 23/11 (Ivan: «si Hacedor
+    # sale a los 90 min, quita esa regla»). Quien la quiera, la enciende en Providers
+    "time": {"group": "auto_rules", "on": False,
              "fields": {"hold": (90, "int", 1, 390), "floor": (20.0, "pct", 0, 1000), "trail": (30.0, "pct", 1, 99)}},
     "eod": {"group": "auto_rules", "on": True, "fields": {"at": ("15:55", "time", "09:35", "15:55")}},
 }

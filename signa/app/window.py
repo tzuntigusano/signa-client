@@ -134,9 +134,11 @@ class MainWindow(QMainWindow):
                           signals=d.get("signals", []))
         if "trades" in d and self.demo is None:
             self.state["trades"] = d["trades"]
-        for k in ("consents", "app_latest", "app_changes", "role", "risk"):
+        for k in ("consents", "app_latest", "app_changes", "role", "risk", "share_as"):
             if k in d:
                 self.state[k] = d[k]
+        if self.screens and "share_as" in d:
+            self.screens["mycalls"].set_share(d["share_as"])
         if self.screens and "admin" in self.nav_buttons:
             self.nav_buttons["admin"].setVisible(self.state.get("role") == "admin")
         if self.screens:
@@ -178,6 +180,7 @@ class MainWindow(QMainWindow):
         self.screens["trades"].set_data(self.state.get("trades", []), self.state["providers"])
         self.screens["overview"].set_data(trades=self.state.get("trades", []))
         self.screens["settings"].set_account(self.state["consents"], self.state["app_latest"], self.state["role"])
+        self.screens["mycalls"].set_share(self.state.get("share_as"))
         if self.state.get("risk"):
             self.screens["settings"].set_risk(self.state["risk"])
             self.screens["overview"].set_data(risk=self.state["risk"])
@@ -700,6 +703,10 @@ class MainWindow(QMainWindow):
             box.setText(f"Buy {o['contracts']} {o['name']} at market?")
             cost = f"About ${o['ask'] * 100 * o['contracts']:,.0f} at the ask {o['ask']:.2f}. " if o.get("ask") else ""
         stop = f"Stop loss −{o['sl_pct']:g}%." if o.get("sl_pct") else "No stop loss."
+        if o.get("share"):  # «Buy sharing»: lo compartido y las reglas que se le aplican
+            box.setText(box.text() + " · shared")
+            stop = (f"Stop loss −{o['sl_pct']:g}%" if o.get("sl_pct") else "Stop loss −60%") + (
+                " and Hacedor's rules. Your followers get this buy and copy your sales and stop loss.")
         box.setInformativeText(cost + stop + ("\n\nLIVE account: a real order with real money." if live
                                               else "\n\nPaper account."))
         yes = box.addButton("Buy", QMessageBox.AcceptRole)

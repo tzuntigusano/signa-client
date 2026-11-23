@@ -93,6 +93,7 @@ class MyCallsScreen(Page):
         self.saved = load_saved()
         self.saved_btns: list = []  # los botones de comprar de la lista (se apagan mientras se manda una compra)
         self.from_saved = False  # la compra en curso salió de la lista: su resultado se enseña ahí
+        self.share_as: str | None = None  # (23/11) quien comparte (CryptoLynx): su botón «Buy sharing»
 
         card = Card()
         self.account = Segmented([("paper", "Paper"), ("live", "Live")], "paper")
@@ -132,8 +133,15 @@ class MyCallsScreen(Page):
         self.keep.setMinimumHeight(38)
         self.keep.setToolTip("Keep this call in the list below to buy it later with one click")
         self.keep.clicked.connect(self._save)
+        # «Buy sharing» (Ivan 23/11, solo quien comparte): la misma compra, publicada a quien la sigue, que copia sus
+        # ventas y su SL; a esta operación se le aplican las reglas de Hacedor (servidor: sharing.py)
+        self.share = button("Buy sharing", "buy")
+        self.share.setToolTip("Buy it and share it: your followers get this buy and then copy what you do on it "
+                              "(sales, stop loss). Hacedor's rules run on it.")
+        self.share.clicked.connect(lambda: self._buy(share=True))
+        self.share.setVisible(False)
         self.note = label("", "small", wrap=True)
-        self.prices.add(hbox(self.go, self.keep, spacing=10))
+        self.prices.add(hbox(self.go, self.share, self.keep, spacing=10))
         self.prices.add(self.note)
         self.add(self.prices)
 
@@ -263,6 +271,9 @@ class MyCallsScreen(Page):
         else:
             self.go.setText(f"Buy {n} {self.name(o)} at market" + (" · LIVE" if o["account"] == "live" else ""))
         self.go.setEnabled(o is not None and not self.busy and sl != "bad")
+        self.share.setText("Sending…" if self.busy else "Buy sharing" + (" · LIVE" if o and o["account"] == "live"
+                                                                          else ""))
+        self.share.setEnabled(o is not None and not self.busy and sl != "bad")
         self.keep.setEnabled(o is not None and sl != "bad")
         for b in self.saved_btns:
             b.setEnabled(not self.busy and b.property("live") is True)
@@ -270,10 +281,18 @@ class MyCallsScreen(Page):
             self.note.setText("✕  Stop loss: a % between 1 and 95 (e.g. 50), or leave it empty.")
 
     # --- comprar ----------------------------------------------------------------------------------
-    def _buy(self):
+    def set_share(self, provider: str | None):
+        """El servidor dice si esta cuenta comparte (y con qué proveedor): enseña o esconde «Buy sharing»."""
+        self.share_as = provider
+        self.share.setVisible(bool(provider))
+        self._paint()
+
+    def _buy(self, share: bool = False):
         o = self.order()
         if o is None or self.busy:
             return
+        if share and self.share_as:
+            o["share"] = True
         o["name"] = self.name(o)
         o["ask"] = (self.quote or {}).get("ask") if self.quoted_for == self.key(o) else None
         self.from_saved = False
