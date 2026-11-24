@@ -23,7 +23,6 @@ from signa.core import link
 from signa.core.logs import Log, single_instance
 
 from .dedupe import Dedupe
-from .dom import DomReader
 from .notifications import Notice, NotPermitted, listen
 from .outbox import Outbox
 from .recorder import Recorder
@@ -83,15 +82,7 @@ class Agent:
         self.dedupe = Dedupe()  # app de Discord + Discord web: el mismo mensaje sale UNA vez
         rc = cfg.get("recorder")  # {"port": 4002, "client_id": 91}: grabar precios con el IB Gateway de este PC
         self.recorder = Recorder(self._send_now, rc.get("port", 4002), rc.get("client_id", 91)) if rc else None
-        # canales leídos de una ventana de Discord en Edge (tarjetas de bot que el aviso de Windows no trae: Namrood)
-        self.doms = [DomReader(d, self.from_dom, log) for d in cfg.get("dom", [])]
-
-    async def from_dom(self, provider: str, msg_id: str, author: str, text: str, at: str):
-        ref = f"d{msg_id}"  # el id del mensaje de Discord: estable, el servidor no lo repite aunque llegue otra vez
-        self.outbox.put(ref, {"type": "notification", "provider": provider, "text": text, "ts": at or None,
-                              "ref": ref, "source": "dom"})
-        log(f"{provider} (window): {' '.join(text.split())[:70]!r} ({len(self.outbox)} pending)")
-        self.wake.set()
+        # (24/11/2026) sin ventana de Discord en Edge: Namrood, el único que la usaba, se borró
 
     async def read(self):
         async for n in listen():
@@ -162,8 +153,7 @@ class Agent:
             await self.ws.send_json(body)
 
     async def run(self):
-        await asyncio.gather(self.read(), self.send(), *([self.recorder.run()] if self.recorder else []),
-                             *(d.run() for d in self.doms))
+        await asyncio.gather(self.read(), self.send(), *([self.recorder.run()] if self.recorder else []))
 
 
 async def check(cfg: dict):
